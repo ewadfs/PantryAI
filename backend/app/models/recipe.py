@@ -1,0 +1,68 @@
+from datetime import date, datetime
+
+from sqlalchemy import (
+    Boolean,
+    Date,
+    DateTime,
+    ForeignKey,
+    Index,
+    Integer,
+    SmallInteger,
+    String,
+    Text,
+    UniqueConstraint,
+    func,
+    text,
+)
+from sqlalchemy.dialects.postgresql import ARRAY, JSONB
+from sqlalchemy.orm import Mapped, mapped_column
+
+from app.database import Base
+
+
+class Recipe(Base):
+    __tablename__ = "recipes"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False)
+    title: Mapped[str] = mapped_column(String(255), nullable=False)
+    description: Mapped[str | None] = mapped_column(Text)
+    difficulty: Mapped[str | None] = mapped_column(String(10))
+    prep_time_min: Mapped[int | None] = mapped_column(Integer)
+    cook_time_min: Mapped[int | None] = mapped_column(Integer)
+    total_time_min: Mapped[int | None] = mapped_column(Integer)
+    servings: Mapped[int | None] = mapped_column(Integer)
+    ingredients_json: Mapped[dict | list | None] = mapped_column(JSONB)
+    instructions_json: Mapped[dict | list | None] = mapped_column(JSONB)
+    nutrition_json: Mapped[dict | list | None] = mapped_column(JSONB)
+    why_this_recipe: Mapped[str | None] = mapped_column(Text)
+    tags: Mapped[list[str] | None] = mapped_column(ARRAY(Text))
+    cuisine: Mapped[str | None] = mapped_column(String(50))
+    ai_model: Mapped[str | None] = mapped_column(String(50))
+    # rating: -1 thumbs down, 1 thumbs up, null unrated
+    rating: Mapped[int | None] = mapped_column(SmallInteger)
+    generated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
+class WeekRecipe(Base):
+    __tablename__ = "week_recipes"
+    __table_args__ = (
+        UniqueConstraint(
+            "user_id", "recipe_id", "week_start", name="uq_week_recipe"
+        ),
+        Index("ix_week_recipes_user_week", "user_id", "week_start"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False)
+    recipe_id: Mapped[int] = mapped_column(ForeignKey("recipes.id"), nullable=False)
+    week_start: Mapped[date] = mapped_column(Date, nullable=False)
+    is_cooked: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=text("false")
+    )
+    cooked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    added_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )

@@ -1,0 +1,10 @@
+Async-configured Alembic environment for PantryAI.
+
+The database URL is read from app.config.settings at runtime (see env.py),
+so it does not need to be set in alembic.ini.
+
+Common commands (run from the backend/ directory):
+
+  alembic revision --autogenerate -m "create initial tables"
+  alembic upgrade head
+  alembic downgrade -1

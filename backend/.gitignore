@@ -8,3 +8,6 @@ venv/
 .mypy_cache/
 .ruff_cache/
 *.log
+
+# Downloaded test fixtures (fetched on demand by scripts/test_pantry_scan.py)
+test_data/

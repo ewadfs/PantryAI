@@ -1,0 +1,42 @@
+import { apiFetch } from "./api";
+import type {
+  CookedResponse,
+  GenerateResponse,
+  Recipe,
+  WeekRecipe,
+  WeekResponse,
+} from "./recipeTypes";
+
+export const generateRecipes = () =>
+  apiFetch<GenerateResponse>("/api/v1/recipes/generate", { method: "POST" });
+
+export const getRecipe = (id: number) => apiFetch<Recipe>(`/api/v1/recipes/${id}`);
+
+export const rateRecipe = (id: number, rating: 1 | -1) =>
+  apiFetch<Recipe>(`/api/v1/recipes/${id}/rate`, { method: "POST", json: { rating } });
+
+export const saveToWeek = (id: number, week_start: string) =>
+  apiFetch<WeekRecipe>(`/api/v1/recipes/${id}/save-to-week`, {
+    method: "POST",
+    json: { week_start },
+  });
+
+export const getWeek = (week: string) =>
+  apiFetch<WeekResponse>(`/api/v1/week/${week}`);
+
+export const removeFromWeek = (week: string, id: number) =>
+  apiFetch<{ status: string; recipe_id: number }>(
+    `/api/v1/week/${week}/recipes/${id}`,
+    { method: "DELETE" },
+  );
+
+export const markCooked = (week: string, id: number) =>
+  apiFetch<CookedResponse>(`/api/v1/week/${week}/recipes/${id}/cooked`, {
+    method: "POST",
+  });
+
+export const buildShoppingList = (week_start: string) =>
+  apiFetch<{ id: number; item_count: number }>(`/api/v1/lists/build`, {
+    method: "POST",
+    json: { week_start },
+  });

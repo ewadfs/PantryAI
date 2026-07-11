@@ -1,7 +1,18 @@
 export type RecipeIngredient = {
   name: string;
+  generic_name: string | null;
+  brand: string | null;
   quantity: string | number | null;
   unit: string | null;
+  in_pantry: boolean;
+  on_sale: boolean;
+  sale_store: string | null;
+  sale_price: string | number | null;
+};
+
+export type KeyIngredient = {
+  generic_name: string;
+  brand: string | null;
   in_pantry: boolean;
   on_sale: boolean;
   sale_store: string | null;
@@ -24,6 +35,7 @@ export type RecipeCost = {
 
 export type Recipe = {
   id: number;
+  status: string;
   title: string;
   description: string | null;
   difficulty: string | null;
@@ -32,16 +44,20 @@ export type Recipe = {
   total_time_min: number | null;
   servings: number | null;
   why_this_recipe: string | null;
+  key_ingredients: KeyIngredient[];
   ingredients: RecipeIngredient[];
   instructions: string[];
   nutrition_per_serving: Nutrition | null;
   tags: string[] | null;
   cuisine: string | null;
   rating: number | null;
+  generated_at: string | null;
   cost: RecipeCost;
 };
 
 export type GenerateResponse = { recipes: Recipe[] };
+
+export type LatestResponse = { generated_at: string | null; recipes: Recipe[] };
 
 export type WeekRecipe = {
   week_start: string;

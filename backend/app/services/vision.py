@@ -48,6 +48,14 @@ Rules:
 - If you are unsure what an item is, put a short description in the "uncertain" \
 list instead of guessing in "items".
 - Group obviously identical items into one entry with a combined quantity.
+- NEVER emit generic placeholder items like "produce in crisper drawer" or \
+"meat (cooked, in tray)". Either identify the specific ingredient(s) or route a \
+short description to the "uncertain" list.
+- Prepared/cooked leftovers and unidentifiable bottles or containers belong in \
+"uncertain", not "items".
+- Single-serve impulse beverages (soda cans, bottled coffee drinks, energy \
+drinks) are low recipe value: still include them, but set category="beverages" \
+and a low, honest confidence.
 
 Return ONLY a JSON object (no markdown, no prose) with this exact shape:
 {

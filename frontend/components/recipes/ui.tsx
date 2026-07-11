@@ -24,22 +24,35 @@ export function totalMinutes(r: Recipe): number | null {
   return null;
 }
 
+/** Ingredients to reason about — full when 'ready', else the concept's key list. */
+export function effectiveIngredients(
+  r: Recipe,
+): { in_pantry: boolean; on_sale: boolean }[] {
+  return r.ingredients.length ? r.ingredients : r.key_ingredients;
+}
+
 export function metaLine(r: Recipe): string {
   const parts: string[] = [];
   const t = totalMinutes(r);
   if (t != null) parts.push(`${t} min`);
   if (r.servings != null) parts.push(`serves ${r.servings}`);
-  const n = r.nutrition_per_serving;
-  if (n?.calories != null) parts.push(`${Math.round(n.calories)} cal`);
-  if (n?.protein_g != null) parts.push(`${Math.round(n.protein_g)}g protein`);
   return parts.join(" · ");
+}
+
+export function nutritionLine(r: Recipe): string | null {
+  const n = r.nutrition_per_serving;
+  if (!n || (n.calories == null && n.protein_g == null)) return null;
+  const bits: string[] = [];
+  if (n.calories != null) bits.push(`${Math.round(n.calories)} cal`);
+  if (n.protein_g != null) bits.push(`${Math.round(n.protein_g)}g protein`);
+  return `≈ ${bits.join(" · ")} · est.`;
 }
 
 /** Honest cost line — never invents a total. */
 export function CostLine({ recipe }: { recipe: Recipe }) {
   const known = Number(recipe.cost.known_buy_cost ?? 0);
   const unknown = recipe.cost.unknown_priced_items;
-  const saleCount = recipe.ingredients.filter((i) => i.on_sale).length;
+  const saleCount = effectiveIngredients(recipe).filter((i) => i.on_sale).length;
 
   if (known <= 0 && unknown === 0) {
     return (
@@ -70,7 +83,7 @@ export function CostLine({ recipe }: { recipe: Recipe }) {
 
 export function PantryLine({ recipe }: { recipe: Recipe }) {
   const have = recipe.cost.pantry_items_used;
-  const total = recipe.ingredients.length;
+  const total = effectiveIngredients(recipe).length;
   return (
     <p className="text-sm text-ink-soft">
       🏠 Have {have} of {total} ingredient{total === 1 ? "" : "s"}

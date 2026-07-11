@@ -83,7 +83,10 @@ async def build(
     db: AsyncSession = Depends(get_db),
 ) -> ShoppingListRead:
     """Consolidate the week's saved recipes into one honest, de-duplicated buy list."""
-    sl, items = await list_builder.build_list(db, current_user, payload.week_start)
+    try:
+        sl, items = await list_builder.build_list(db, current_user, payload.week_start)
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(e))
     return ShoppingListRead.model_validate(list_builder.serialize_list(sl, items))
 
 

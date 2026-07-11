@@ -51,7 +51,10 @@ class Settings(BaseSettings):
 
     # Anthropic model selection
     vision_model: str = "claude-sonnet-4-6"
-    recipe_model: str = "claude-sonnet-4-6"
+    recipe_model: str = "claude-sonnet-4-6"  # Stage 1: recipe concepts
+    # Stage 2: full recipe details. Defaults to the same model but is
+    # env-overridable (DETAIL_MODEL) so we can A/B a cheaper model later.
+    detail_model: str = "claude-sonnet-4-6"
 
     # CORS — comma-separated *extra* origins, merged with _DEFAULT_CORS_ORIGINS.
     # A bare "*" is ignored because it cannot be combined with credentials.

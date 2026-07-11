@@ -25,9 +25,15 @@ class Recipe(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False)
+    # 'concept' (Stage 1 done, details pending) or 'ready' (full details written)
+    status: Mapped[str] = mapped_column(
+        String(20), nullable=False, server_default=text("'ready'")
+    )
     title: Mapped[str] = mapped_column(String(255), nullable=False)
     description: Mapped[str | None] = mapped_column(Text)
     difficulty: Mapped[str | None] = mapped_column(String(10))
+    # 4-6 defining ingredients from Stage 1; superseded by ingredients_json.
+    key_ingredients_json: Mapped[dict | list | None] = mapped_column(JSONB)
     prep_time_min: Mapped[int | None] = mapped_column(Integer)
     cook_time_min: Mapped[int | None] = mapped_column(Integer)
     total_time_min: Mapped[int | None] = mapped_column(Integer)

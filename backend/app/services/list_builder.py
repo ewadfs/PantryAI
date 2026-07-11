@@ -8,6 +8,7 @@ otherwise the price is null (the frontend renders an em dash).
 
 from __future__ import annotations
 
+import asyncio
 from datetime import date
 from decimal import Decimal, InvalidOperation
 
@@ -157,11 +158,47 @@ def compute_totals(items: list[ShoppingListItem]) -> tuple[Decimal, Decimal, int
     return total.quantize(Decimal("0.01")), savings.quantize(Decimal("0.01")), len(items)
 
 
+async def _await_week_ready(
+    db: AsyncSession, user_id: int, week_start: date, timeout: float = 20.0
+) -> None:
+    """Wait (briefly) for this week's recipes to finish Stage-2 detail generation.
+
+    Building a list from a 'concept' recipe would produce a partial list, so we
+    poll until all are 'ready' or raise so the caller can surface a clear error.
+    """
+    deadline = timeout
+    while True:
+        statuses = (
+            (
+                await db.execute(
+                    select(Recipe.status)
+                    .join(WeekRecipe, WeekRecipe.recipe_id == Recipe.id)
+                    .where(
+                        WeekRecipe.user_id == user_id,
+                        WeekRecipe.week_start == week_start,
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        if all(s == "ready" for s in statuses):
+            return
+        if deadline <= 0:
+            raise ValueError(
+                "Some saved recipes are still being written. "
+                "Give it a few seconds and try again."
+            )
+        await asyncio.sleep(2)
+        deadline -= 2
+
+
 async def build_list(
     db: AsyncSession, user: User, week_start: date
 ) -> tuple[ShoppingList, list[ShoppingListItem]]:
     """Build (and persist, replacing any active list for the week) the buy list."""
     today = date.today()
+    await _await_week_ready(db, user.id, week_start)
     await ingredient_matcher.preload(db)
 
     # Reference maps: ingredient category/shelf-life/staple, live pantry, deals.

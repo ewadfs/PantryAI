@@ -2,6 +2,7 @@ import { apiFetch } from "./api";
 import type {
   CookedResponse,
   GenerateResponse,
+  LatestResponse,
   Recipe,
   WeekRecipe,
   WeekResponse,
@@ -9,6 +10,9 @@ import type {
 
 export const generateRecipes = () =>
   apiFetch<GenerateResponse>("/api/v1/recipes/generate", { method: "POST" });
+
+export const getLatestRecipes = () =>
+  apiFetch<LatestResponse>("/api/v1/recipes/latest");
 
 export const getRecipe = (id: number) => apiFetch<Recipe>(`/api/v1/recipes/${id}`);
 

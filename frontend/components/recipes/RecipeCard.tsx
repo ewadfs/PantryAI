@@ -1,7 +1,7 @@
 "use client";
 
 import type { Recipe } from "@/lib/recipeTypes";
-import { CostLine, DifficultyPill, PantryLine, metaLine } from "./ui";
+import { CostLine, DifficultyPill, PantryLine, metaLine, nutritionLine } from "./ui";
 
 export default function RecipeCard({
   recipe,
@@ -29,6 +29,9 @@ export default function RecipeCard({
       </div>
 
       <p className="mt-1 text-sm text-ink-soft">{metaLine(recipe)}</p>
+      {nutritionLine(recipe) && (
+        <p className="mt-0.5 text-sm text-ink-soft">{nutritionLine(recipe)}</p>
+      )}
 
       <div className="mt-3 space-y-1.5">
         <PantryLine recipe={recipe} />

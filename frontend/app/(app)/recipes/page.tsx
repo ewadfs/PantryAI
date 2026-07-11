@@ -6,6 +6,7 @@ import { currentWeekStart } from "@/lib/week";
 import {
   buildShoppingList,
   generateRecipes,
+  getLatestRecipes,
   getWeek,
   markCooked,
   rateRecipe,
@@ -24,6 +25,16 @@ const STEPS = [
   "Writing your recipes…",
 ];
 
+function timeAgo(iso: string | null): string {
+  if (!iso) return "";
+  const mins = Math.floor((Date.now() - new Date(iso).getTime()) / 60000);
+  if (mins < 1) return "just now";
+  if (mins < 60) return `${mins}m ago`;
+  const h = Math.floor(mins / 60);
+  if (h < 24) return `${h}h ago`;
+  return `${Math.floor(h / 24)}d ago`;
+}
+
 export default function RecipesPage() {
   const router = useRouter();
   const weekStart = useMemo(() => currentWeekStart(), []);
@@ -38,6 +49,8 @@ export default function RecipesPage() {
   const [cookingId, setCookingId] = useState<number | null>(null);
   const [buildingList, setBuildingList] = useState(false);
   const [confetti, setConfetti] = useState(false);
+  const [generatedAt, setGeneratedAt] = useState<string | null>(null);
+  const [warming, setWarming] = useState(true);
   const stepTimer = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const savedIds = useMemo(
@@ -65,6 +78,7 @@ export default function RecipesPage() {
     try {
       const res = await generateRecipes();
       setRecipes(res.recipes);
+      setGeneratedAt(res.recipes[0]?.generated_at ?? new Date().toISOString());
     } catch (e) {
       setError(e instanceof Error ? e.message : "Could not generate recipes.");
     } finally {
@@ -73,15 +87,33 @@ export default function RecipesPage() {
     }
   }, []);
 
+  // Warm start: render the most recent batch immediately (any status).
+  const loadLatest = useCallback(async () => {
+    try {
+      const res = await getLatestRecipes();
+      if (res.recipes.length) {
+        setRecipes(res.recipes);
+        setGeneratedAt(res.generated_at);
+      }
+    } catch {
+      /* ignore — user can generate */
+    } finally {
+      setWarming(false);
+    }
+  }, []);
+
   // Initial load + optional auto-generate from ?generate=1.
   useEffect(() => {
     loadWeek();
-    if (typeof window !== "undefined") {
-      const params = new URLSearchParams(window.location.search);
-      if (params.get("generate") === "1") {
-        window.history.replaceState({}, "", "/recipes");
-        generate();
-      }
+    const auto =
+      typeof window !== "undefined" &&
+      new URLSearchParams(window.location.search).get("generate") === "1";
+    if (auto) {
+      window.history.replaceState({}, "", "/recipes");
+      setWarming(false);
+      generate();
+    } else {
+      loadLatest();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -190,8 +222,17 @@ export default function RecipesPage() {
         onBuildList={onBuildList}
       />
 
+      {/* Warm-load placeholder */}
+      {warming && !recipes && !generating && (
+        <div className="flex flex-col gap-4">
+          {[0, 1, 2].map((i) => (
+            <SkeletonCard key={i} />
+          ))}
+        </div>
+      )}
+
       {/* Generate area */}
-      {!recipes && !generating && (
+      {!recipes && !generating && !warming && (
         <div className="rounded-2xl border border-hairline bg-surface p-6 text-center">
           <p className="text-base font-semibold text-ink">Tonight&apos;s dinner, sorted</p>
           <p className="mt-1 text-sm text-ink-soft">
@@ -225,6 +266,9 @@ export default function RecipesPage() {
 
       {recipes && !generating && (
         <div>
+          {generatedAt && (
+            <p className="mb-3 text-xs text-ink-faint">Generated {timeAgo(generatedAt)}</p>
+          )}
           <div className="flex flex-col gap-4">
             {recipes.map((r) => (
               <RecipeCard

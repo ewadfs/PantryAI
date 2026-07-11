@@ -46,6 +46,11 @@ app.include_router(recipes.router, prefix=API_PREFIX)
 app.include_router(shopping.router, prefix=API_PREFIX)
 
 
+@app.get("/")
+async def root() -> dict[str, str]:
+    return {"app": "PantryAI API", "status": "ok", "docs": "/docs"}
+
+
 @app.get("/health")
 async def health() -> dict[str, str]:
     return {"status": "ok"}

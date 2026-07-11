@@ -2,7 +2,15 @@
 
 from datetime import date, datetime, timedelta, timezone
 
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
+from fastapi import (
+    APIRouter,
+    BackgroundTasks,
+    Depends,
+    File,
+    HTTPException,
+    UploadFile,
+    status,
+)
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -20,7 +28,7 @@ from app.schemas.pantry import (
     PantryListResponse,
     ScanResponse,
 )
-from app.services import ingredient_matcher, vision
+from app.services import ingredient_matcher, recipe_engine, vision
 from app.services.auth import get_current_user
 
 router = APIRouter(prefix="/pantry", tags=["pantry"])
@@ -87,6 +95,7 @@ async def scan_pantry(
 async def confirm_scan(
     scan_id: int,
     payload: ConfirmRequest,
+    background_tasks: BackgroundTasks,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> ConfirmResponse:
@@ -207,6 +216,9 @@ async def confirm_scan(
         .scalars()
         .all()
     )
+
+    # Warm the Recipes tab: pre-generate a batch from the freshly-saved pantry.
+    background_tasks.add_task(recipe_engine.warm_generate, current_user.id)
 
     return ConfirmResponse(
         scan_id=scan_id,

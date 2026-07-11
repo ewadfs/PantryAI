@@ -7,13 +7,32 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 class RecipeIngredient(BaseModel):
-    """One ingredient line. ``on_sale``/``sale_*`` reflect OUR deal table."""
+    """One ingredient line. ``on_sale``/``sale_*`` reflect OUR deal table.
+
+    ``name`` mirrors ``generic_name`` (kept for the shopping-list builder);
+    ``brand`` is a separate, optional sub-label — never embedded in the name.
+    """
 
     model_config = ConfigDict(extra="ignore")
 
     name: str
+    generic_name: str | None = None
+    brand: str | None = None
     quantity: str | float | None = None
     unit: str | None = None
+    in_pantry: bool = False
+    on_sale: bool = False
+    sale_store: str | None = None
+    sale_price: Decimal | None = None
+
+
+class KeyIngredient(BaseModel):
+    """A defining ingredient from the fast concept stage."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    generic_name: str
+    brand: str | None = None
     in_pantry: bool = False
     on_sale: bool = False
     sale_store: str | None = None
@@ -42,6 +61,7 @@ class RecipeRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: int
+    status: str = "ready"
     title: str
     description: str | None = None
     difficulty: str | None = None
@@ -50,16 +70,23 @@ class RecipeRead(BaseModel):
     total_time_min: int | None = None
     servings: int | None = None
     why_this_recipe: str | None = None
+    key_ingredients: list[KeyIngredient] = Field(default_factory=list)
     ingredients: list[RecipeIngredient] = Field(default_factory=list)
     instructions: list[str] = Field(default_factory=list)
     nutrition_per_serving: NutritionPerServing | None = None
     tags: list[str] | None = None
     cuisine: str | None = None
     rating: int | None = None
+    generated_at: datetime | None = None
     cost: RecipeCost
 
 
 class GenerateResponse(BaseModel):
+    recipes: list[RecipeRead]
+
+
+class LatestResponse(BaseModel):
+    generated_at: datetime | None = None
     recipes: list[RecipeRead]
 
 

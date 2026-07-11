@@ -2,7 +2,7 @@
 
 from datetime import date, datetime, timezone
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -12,6 +12,7 @@ from app.models.recipe import Recipe, WeekRecipe
 from app.models.user import User
 from app.schemas.recipe import (
     GenerateResponse,
+    LatestResponse,
     RateRequest,
     RecipeRead,
     SaveToWeekRequest,
@@ -44,12 +45,53 @@ async def _owned_recipe(db: AsyncSession, recipe_id: int, user_id: int) -> Recip
 # --------------------------------------------------------------------------- #
 @router.post("/recipes/generate", response_model=GenerateResponse)
 async def generate(
+    background_tasks: BackgroundTasks,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> GenerateResponse:
-    """Generate 3 recipes (easy/medium/hard) tailored to pantry, deals, and goals."""
-    recipes = await recipe_engine.generate_recipes(db, current_user)
-    return GenerateResponse(recipes=[RecipeRead.model_validate(r) for r in recipes])
+    """Stage 1: return 3 recipe concepts fast; Stage 2 details run in background."""
+    recipes = await recipe_engine.generate_concepts(db, current_user)
+    reads = [
+        RecipeRead.model_validate(recipe_engine.recipe_to_read(r)) for r in recipes
+    ]
+    ids = [r.id for r in recipes]
+    if ids:
+        background_tasks.add_task(recipe_engine.run_details_bg, current_user.id, ids)
+    return GenerateResponse(recipes=reads)
+
+
+@router.get("/recipes/latest", response_model=LatestResponse)
+async def latest(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> LatestResponse:
+    """The user's most recent generated batch (any status) for a warm tab load."""
+    newest = await db.scalar(
+        select(Recipe.generated_at)
+        .where(Recipe.user_id == current_user.id)
+        .order_by(Recipe.generated_at.desc())
+        .limit(1)
+    )
+    if newest is None:
+        return LatestResponse(generated_at=None, recipes=[])
+    rows = (
+        (
+            await db.execute(
+                select(Recipe)
+                .where(
+                    Recipe.user_id == current_user.id,
+                    Recipe.generated_at == newest,
+                )
+                .order_by(Recipe.id)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    return LatestResponse(
+        generated_at=newest,
+        recipes=[RecipeRead.model_validate(recipe_engine.recipe_to_read(r)) for r in rows],
+    )
 
 
 @router.get("/recipes/{recipe_id}", response_model=RecipeRead)

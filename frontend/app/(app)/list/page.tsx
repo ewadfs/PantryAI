@@ -209,6 +209,12 @@ export default function ListPage() {
         )}
       </div>
 
+      {list.store_name && storeName && list.store_name !== storeName && (
+        <p className="mt-3 rounded-xl bg-warn-soft px-4 py-2.5 text-sm text-warn">
+          Priced at {list.store_name} — rebuild to re-price at {storeName}.
+        </p>
+      )}
+
       {error && (
         <p className="mt-4 rounded-xl bg-warn-soft px-4 py-3 text-sm text-warn" role="alert">
           {error}

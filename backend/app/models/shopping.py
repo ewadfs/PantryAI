@@ -28,6 +28,8 @@ class ShoppingList(Base):
     status: Mapped[str] = mapped_column(
         String(20), nullable=False, server_default=text("'active'")
     )
+    # Store this list was priced against (for the "re-price after store switch" note).
+    priced_store_name: Mapped[str | None] = mapped_column(String(200))
     total_known_cost: Mapped[Decimal | None] = mapped_column(Numeric(10, 2))
     deal_savings: Mapped[Decimal | None] = mapped_column(Numeric(10, 2))
     item_count: Mapped[int | None] = mapped_column(Integer)

@@ -44,6 +44,8 @@ class Recipe(Base):
     why_this_recipe: Mapped[str | None] = mapped_column(Text)
     tags: Mapped[list[str] | None] = mapped_column(ARRAY(Text))
     cuisine: Mapped[str | None] = mapped_column(String(50))
+    # Store this batch was anchored to (for the weekly store selector / staleness).
+    generated_store_name: Mapped[str | None] = mapped_column(String(200))
     ai_model: Mapped[str | None] = mapped_column(String(50))
     # rating: -1 thumbs down, 1 thumbs up, null unrated
     rating: Mapped[int | None] = mapped_column(SmallInteger)

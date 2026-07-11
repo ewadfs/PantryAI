@@ -57,7 +57,11 @@ export type Recipe = {
 
 export type GenerateResponse = { recipes: Recipe[] };
 
-export type LatestResponse = { generated_at: string | null; recipes: Recipe[] };
+export type LatestResponse = {
+  generated_at: string | null;
+  store_name: string | null;
+  recipes: Recipe[];
+};
 
 export type WeekRecipe = {
   week_start: string;

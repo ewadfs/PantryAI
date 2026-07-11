@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -10,6 +10,7 @@ from app.schemas.store import (
     StoreSelectionUpdate,
     UserStoreRead,
 )
+from app.services import recipe_engine
 from app.services.auth import get_current_user
 
 router = APIRouter(prefix="/stores", tags=["stores"])
@@ -73,6 +74,41 @@ async def list_my_stores(
         )
         for us, loc, chain in rows
     ]
+
+
+@router.put("/mine/default/{store_location_id}", response_model=list[UserStoreRead])
+async def set_default_store(
+    store_location_id: int,
+    background_tasks: BackgroundTasks,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> list[UserStoreRead]:
+    """Switch the user's default store to one of their saved stores.
+
+    Everything (deals, recipe generation, list pricing) is already anchored to
+    the default store, so this is the whole "this week's store" switch. Fires a
+    fresh background recipe batch anchored to the new store.
+    """
+    saved = (
+        (
+            await db.execute(
+                select(UserStore).where(UserStore.user_id == current_user.id)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    if not any(s.store_location_id == store_location_id for s in saved):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="That store is not one of your saved stores.",
+        )
+    for s in saved:
+        s.is_default = s.store_location_id == store_location_id
+    await db.flush()
+
+    background_tasks.add_task(recipe_engine.warm_generate, current_user.id)
+    return await list_my_stores(current_user=current_user, db=db)
 
 
 @router.put("/mine", response_model=list[UserStoreRead])

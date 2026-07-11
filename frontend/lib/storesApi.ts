@@ -5,6 +5,11 @@ export const getAllStores = () => apiFetch<StoreLocation[]>("/api/v1/stores");
 
 export const getMyStores = () => apiFetch<UserStore[]>("/api/v1/stores/mine");
 
+export const setDefaultStore = (storeLocationId: number) =>
+  apiFetch<UserStore[]>(`/api/v1/stores/mine/default/${storeLocationId}`, {
+    method: "PUT",
+  });
+
 export const replaceMyStores = (
   store_location_ids: number[],
   default_store_id: number | null,

@@ -13,9 +13,12 @@ import {
   removeFromWeek,
   saveToWeek,
 } from "@/lib/recipeApi";
+import { getMyStores, setDefaultStore } from "@/lib/storesApi";
+import type { UserStore } from "@/lib/listTypes";
 import type { Recipe, WeekResponse } from "@/lib/recipeTypes";
 import RecipeCard from "@/components/recipes/RecipeCard";
 import RecipeSheet from "@/components/recipes/RecipeSheet";
+import StoreSheet from "@/components/recipes/StoreSheet";
 import ThisWeek from "@/components/recipes/ThisWeek";
 import Confetti from "@/components/recipes/Confetti";
 
@@ -51,7 +54,17 @@ export default function RecipesPage() {
   const [confetti, setConfetti] = useState(false);
   const [generatedAt, setGeneratedAt] = useState<string | null>(null);
   const [warming, setWarming] = useState(true);
+  const [stores, setStores] = useState<UserStore[]>([]);
+  const [storeSheet, setStoreSheet] = useState(false);
+  const [switching, setSwitching] = useState(false);
+  const [batchStore, setBatchStore] = useState<string | null>(null);
   const stepTimer = useRef<ReturnType<typeof setInterval> | null>(null);
+  const pollTimer = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  const currentStore = stores.find((s) => s.is_default) ?? stores[0] ?? null;
+  const currentStoreName = currentStore?.store.store_name ?? null;
+  const stale =
+    !!batchStore && !!currentStoreName && batchStore !== currentStoreName;
 
   const savedIds = useMemo(
     () => new Set((week?.recipes ?? []).map((w) => w.recipe.id)),
@@ -79,6 +92,12 @@ export default function RecipesPage() {
       const res = await generateRecipes();
       setRecipes(res.recipes);
       setGeneratedAt(res.recipes[0]?.generated_at ?? new Date().toISOString());
+      // Fresh batch is anchored to the current default store.
+      setStores((prev) => {
+        const name = (prev.find((s) => s.is_default) ?? prev[0])?.store.store_name;
+        setBatchStore(name ?? null);
+        return prev;
+      });
     } catch (e) {
       setError(e instanceof Error ? e.message : "Could not generate recipes.");
     } finally {
@@ -94,6 +113,7 @@ export default function RecipesPage() {
       if (res.recipes.length) {
         setRecipes(res.recipes);
         setGeneratedAt(res.generated_at);
+        setBatchStore(res.store_name);
       }
     } catch {
       /* ignore — user can generate */
@@ -102,9 +122,55 @@ export default function RecipesPage() {
     }
   }, []);
 
+  const loadStores = useCallback(async () => {
+    try {
+      setStores(await getMyStores());
+    } catch {
+      /* ignore */
+    }
+  }, []);
+
+  // Poll for the background batch anchored to the newly-selected store.
+  const pollForNewBatch = useCallback((storeName: string) => {
+    if (pollTimer.current) clearInterval(pollTimer.current);
+    let tries = 0;
+    pollTimer.current = setInterval(async () => {
+      tries += 1;
+      try {
+        const res = await getLatestRecipes();
+        if (res.store_name === storeName && res.recipes.length) {
+          setRecipes(res.recipes);
+          setGeneratedAt(res.generated_at);
+          setBatchStore(res.store_name);
+          if (pollTimer.current) clearInterval(pollTimer.current);
+        }
+      } catch {
+        /* keep polling */
+      }
+      if (tries >= 20 && pollTimer.current) clearInterval(pollTimer.current);
+    }, 4000);
+  }, []);
+
+  async function onSelectStore(id: number) {
+    setSwitching(true);
+    setError(null);
+    try {
+      const updated = await setDefaultStore(id);
+      setStores(updated);
+      setStoreSheet(false);
+      const newName = (updated.find((s) => s.is_default) ?? updated[0])?.store.store_name;
+      if (newName) pollForNewBatch(newName); // note stays until the new batch lands
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Could not switch stores.");
+    } finally {
+      setSwitching(false);
+    }
+  }
+
   // Initial load + optional auto-generate from ?generate=1.
   useEffect(() => {
     loadWeek();
+    loadStores();
     const auto =
       typeof window !== "undefined" &&
       new URLSearchParams(window.location.search).get("generate") === "1";
@@ -115,6 +181,9 @@ export default function RecipesPage() {
     } else {
       loadLatest();
     }
+    return () => {
+      if (pollTimer.current) clearInterval(pollTimer.current);
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -210,7 +279,18 @@ export default function RecipesPage() {
     <div className="px-5 pt-8">
       {confetti && <Confetti onDone={() => setConfetti(false)} />}
 
-      <h1 className="mb-6 text-2xl font-bold text-ink">Recipes</h1>
+      <div className="mb-5 flex items-center justify-between gap-2">
+        <h1 className="text-2xl font-bold text-ink">Recipes</h1>
+        {currentStoreName && (
+          <button
+            onClick={() => setStoreSheet(true)}
+            className="flex shrink-0 items-center gap-1 rounded-full border border-hairline bg-surface px-3 py-1.5 text-sm font-medium text-ink active:scale-[.98]"
+          >
+            📍 <span className="max-w-[10rem] truncate">{currentStoreName}</span>
+            <span className="text-ink-faint">▾</span>
+          </button>
+        )}
+      </div>
 
       <ThisWeek
         week={week}
@@ -266,8 +346,15 @@ export default function RecipesPage() {
 
       {recipes && !generating && (
         <div>
-          {generatedAt && (
-            <p className="mb-3 text-xs text-ink-faint">Generated {timeAgo(generatedAt)}</p>
+          {stale ? (
+            <div className="mb-3 rounded-xl bg-warn-soft px-4 py-3 text-sm text-warn">
+              These were generated for {batchStore}. New {currentStoreName} recipes
+              are on the way…
+            </div>
+          ) : (
+            generatedAt && (
+              <p className="mb-3 text-xs text-ink-faint">Generated {timeAgo(generatedAt)}</p>
+            )
           )}
           <div className="flex flex-col gap-4">
             {recipes.map((r) => (
@@ -284,9 +371,13 @@ export default function RecipesPage() {
           </div>
           <button
             onClick={generate}
-            className="mt-4 flex h-12 w-full items-center justify-center rounded-2xl border border-hairline bg-surface text-sm font-semibold text-ink active:scale-[.99]"
+            className={`mt-4 flex h-12 w-full items-center justify-center rounded-2xl text-sm font-semibold active:scale-[.99] ${
+              stale
+                ? "bg-brand text-white shadow-lg shadow-brand/25"
+                : "border border-hairline bg-surface text-ink"
+            }`}
           >
-            Show me different options
+            {stale ? `Get ${currentStoreName} recipes` : "Show me different options"}
           </button>
         </div>
       )}
@@ -297,6 +388,16 @@ export default function RecipesPage() {
           saved={savedIds.has(selected.id)}
           onSave={() => onSave(selected.id)}
           onClose={() => setSelected(null)}
+        />
+      )}
+
+      {storeSheet && (
+        <StoreSheet
+          stores={stores}
+          currentId={currentStore?.store.id ?? null}
+          switching={switching}
+          onSelect={onSelectStore}
+          onClose={() => setStoreSheet(false)}
         />
       )}
     </div>

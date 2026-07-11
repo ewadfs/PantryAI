@@ -63,17 +63,23 @@ def _unit_key(unit: str | None) -> str:
     return (unit or "").strip().lower()
 
 
-async def default_chain(db: AsyncSession, user_id: int) -> tuple[int | None, str | None]:
-    """(chain_id, chain_name) of the user's default store, or (None, None)."""
+async def default_chain(
+    db: AsyncSession, user_id: int
+) -> tuple[int | None, str | None, str | None]:
+    """(chain_id, chain_name, store_name) of the user's default store."""
     row = (
         await db.execute(
-            select(StoreLocation.chain_id, SupportedChain.chain_name)
+            select(
+                StoreLocation.chain_id,
+                SupportedChain.chain_name,
+                StoreLocation.store_name,
+            )
             .join(UserStore, UserStore.store_location_id == StoreLocation.id)
             .join(SupportedChain, SupportedChain.id == StoreLocation.chain_id)
             .where(UserStore.user_id == user_id, UserStore.is_default.is_(True))
         )
     ).first()
-    return (row[0], row[1]) if row else (None, None)
+    return (row[0], row[1], row[2]) if row else (None, None, None)
 
 
 async def current_deals(
@@ -137,6 +143,7 @@ def serialize_list(list_obj: ShoppingList, items: list[ShoppingListItem]) -> dic
         "id": list_obj.id,
         "week_start": list_obj.week_start,
         "status": list_obj.status,
+        "store_name": list_obj.priced_store_name,
         "total_known_cost": list_obj.total_known_cost,
         "deal_savings": list_obj.deal_savings,
         "item_count": list_obj.item_count,
@@ -224,7 +231,7 @@ async def build_list(
             active_by_iid.setdefault(it.ingredient_id, it)
         active_by_norm.setdefault(ingredient_matcher._norm(it.name or ""), it)
 
-    chain_id, _chain_name = await default_chain(db, user.id)
+    chain_id, _chain_name, store_name = await default_chain(db, user.id)
     deal_by_ingredient = await _best_deal_by_ingredient(db, chain_id, today)
 
     # 1. Collect ingredients from all of this week's recipes.
@@ -356,7 +363,8 @@ async def build_list(
         await db.execute(delete(ShoppingList).where(ShoppingList.id.in_(existing)))
 
     shopping_list = ShoppingList(
-        user_id=user.id, week_start=week_start, status="active"
+        user_id=user.id, week_start=week_start, status="active",
+        priced_store_name=store_name,
     )
     db.add(shopping_list)
     await db.flush()

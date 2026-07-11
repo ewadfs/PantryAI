@@ -123,7 +123,7 @@ async def current_list(
     on_list_ingredient_ids = {
         it.ingredient_id for it in items if it.ingredient_id is not None
     }
-    chain_id, _name = await list_builder.default_chain(db, current_user.id)
+    chain_id, _name, _store = await list_builder.default_chain(db, current_user.id)
     also: list[AlsoOnSale] = []
     if chain_id is not None:
         for d in await list_builder.current_deals(db, chain_id, date.today()):
@@ -151,6 +151,7 @@ async def current_list(
         id=sl.id,
         week_start=sl.week_start,
         status=sl.status,
+        store_name=sl.priced_store_name,
         total_known_cost=sl.total_known_cost,
         deal_savings=sl.deal_savings,
         item_count=sl.item_count,

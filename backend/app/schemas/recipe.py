@@ -87,6 +87,7 @@ class GenerateResponse(BaseModel):
 
 class LatestResponse(BaseModel):
     generated_at: datetime | None = None
+    store_name: str | None = None
     recipes: list[RecipeRead]
 
 

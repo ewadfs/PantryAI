@@ -73,7 +73,7 @@ async def latest(
         .limit(1)
     )
     if newest is None:
-        return LatestResponse(generated_at=None, recipes=[])
+        return LatestResponse(generated_at=None, store_name=None, recipes=[])
     rows = (
         (
             await db.execute(
@@ -88,8 +88,10 @@ async def latest(
         .scalars()
         .all()
     )
+    store_name = rows[0].generated_store_name if rows else None
     return LatestResponse(
         generated_at=newest,
+        store_name=store_name,
         recipes=[RecipeRead.model_validate(recipe_engine.recipe_to_read(r)) for r in rows],
     )
 

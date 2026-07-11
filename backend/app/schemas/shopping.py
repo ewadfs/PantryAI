@@ -38,6 +38,7 @@ class ShoppingListRead(BaseModel):
     id: int
     week_start: date | None = None
     status: str
+    store_name: str | None = None
     total_known_cost: Decimal | None = None
     deal_savings: Decimal | None = None
     item_count: int | None = None
@@ -62,6 +63,7 @@ class CurrentListResponse(BaseModel):
     id: int
     week_start: date | None = None
     status: str
+    store_name: str | None = None
     total_known_cost: Decimal | None = None
     deal_savings: Decimal | None = None
     item_count: int | None = None

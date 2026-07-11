@@ -160,16 +160,23 @@ def _use_soon(item: PantryItem, today: date) -> bool:
     return False
 
 
-async def _default_chain(db: AsyncSession, user_id: int) -> tuple[int | None, str | None]:
+async def _default_store(
+    db: AsyncSession, user_id: int
+) -> tuple[int | None, str | None, str | None]:
+    """(chain_id, chain_name, store_name) of the user's default store."""
     row = (
         await db.execute(
-            select(StoreLocation.chain_id, SupportedChain.chain_name)
+            select(
+                StoreLocation.chain_id,
+                SupportedChain.chain_name,
+                StoreLocation.store_name,
+            )
             .join(UserStore, UserStore.store_location_id == StoreLocation.id)
             .join(SupportedChain, SupportedChain.id == StoreLocation.chain_id)
             .where(UserStore.user_id == user_id, UserStore.is_default.is_(True))
         )
     ).first()
-    return (row[0], row[1]) if row else (None, None)
+    return (row[0], row[1], row[2]) if row else (None, None, None)
 
 
 async def _all_current_deals(db: AsyncSession, chain_id: int, today: date) -> list[DealCache]:
@@ -205,6 +212,7 @@ def _relevant_deals(deals: list[DealCache], pantry: list[PantryItem]) -> list[De
 class _Ctx:
     pantry: list[PantryItem]
     chain_name: str | None
+    store_name: str | None
     deal_by_ingredient: dict[int, DealCache]
     context_text: str
 
@@ -225,7 +233,7 @@ async def _load_context(db: AsyncSession, user: User) -> _Ctx:
         .all()
     )
 
-    chain_id, chain_name = await _default_chain(db, user.id)
+    chain_id, chain_name, store_name = await _default_store(db, user.id)
     all_deals = await _all_current_deals(db, chain_id, today) if chain_id else []
     deal_by_ingredient: dict[int, DealCache] = {}
     for d in all_deals:
@@ -238,7 +246,7 @@ async def _load_context(db: AsyncSession, user: User) -> _Ctx:
 
     relevant = _relevant_deals(all_deals, pantry)
     context_text = _build_context(pantry, relevant, chain_name, today)
-    return _Ctx(pantry, chain_name, deal_by_ingredient, context_text)
+    return _Ctx(pantry, chain_name, store_name, deal_by_ingredient, context_text)
 
 
 def _build_context(
@@ -438,6 +446,7 @@ async def generate_concepts(db: AsyncSession, user: User) -> list[Recipe]:
             why_this_recipe=r.get("why_this_recipe"),
             tags=r.get("tags"),
             cuisine=(r.get("cuisine") or None),
+            generated_store_name=ctx.store_name,
             ai_model=settings.recipe_model,
         )
         db.add(recipe)

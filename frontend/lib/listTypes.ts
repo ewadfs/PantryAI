@@ -40,6 +40,7 @@ export type CurrentList = {
   id: number;
   week_start: string | null;
   status: string;
+  store_name: string | null;
   total_known_cost: string | number | null;
   deal_savings: string | number | null;
   item_count: number | null;

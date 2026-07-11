@@ -1,36 +1,61 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# PantryAI — Frontend
 
-## Getting Started
+Mobile-first PWA (Next.js 16 App Router, TypeScript, Tailwind v4). Light theme
+only. Talks to the PantryAI backend and Supabase for auth.
 
-First, run the development server:
+## Getting started
 
 ```bash
+npm install
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Open http://localhost:3000. You'll be redirected to `/login` until you sign in
+(email + password against Supabase).
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+### Environment (`.env.local`)
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+```
+NEXT_PUBLIC_SUPABASE_URL=https://<project-ref>.supabase.co   # project root, NOT /rest/v1
+NEXT_PUBLIC_SUPABASE_ANON_KEY=<anon or publishable key>
+NEXT_PUBLIC_API_URL=<backend base URL>
+```
 
-## Learn More
+In Supabase → Authentication → URL Configuration, make sure the **Site URL** (and
+redirect allow-list) includes `http://localhost:3000`.
 
-To learn more about Next.js, take a look at the following resources:
+## Testing the camera on a real phone
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+Browsers only allow `getUserMedia`/`<input capture>` camera access over **HTTPS
+or `localhost`**. `http://<your-lan-ip>:3000` from your phone will **not** open
+the camera. Two ways to test on a device:
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+1. **Tunnel (recommended)** — expose your local dev server over HTTPS:
 
-## Deploy on Vercel
+   ```bash
+   npm run dev            # terminal 1
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+   # terminal 2 — pick one:
+   npx cloudflared tunnel --url http://localhost:3000
+   # or
+   npx ngrok http 3000
+   ```
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+   Open the printed `https://…` URL on your phone. Then add that exact HTTPS
+   origin to Supabase's Site URL / redirect allow-list, or auth callbacks will be
+   rejected.
+
+2. **Same-Wi-Fi without a tunnel** — the file picker (gallery) still works over
+   plain HTTP on your LAN IP; only the live *camera capture* needs HTTPS.
+
+> Note: the app reads `NEXT_PUBLIC_API_URL` for backend calls. If that backend
+> isn't reachable, scanning/pantry actions will error — point it at a running
+> API (local `http://localhost:8000` or your deployed URL).
+
+## Structure
+
+- `app/(app)/*` — authenticated screens behind the bottom tab bar
+  (Home, Recipes, Scan, List, Settings) plus `/pantry` (linked, not a tab).
+- `app/login` — email + password sign-in.
+- `proxy.ts` — route protection (Next 16's renamed Middleware).
+- `lib/` — Supabase client, typed API wrapper, image compression, pantry API.

@@ -1,3 +1,5 @@
+import Link from "next/link";
+
 export default function HomePage() {
   return (
     <div className="px-5 pt-8">
@@ -5,6 +7,24 @@ export default function HomePage() {
         <p className="text-sm text-ink-soft">Welcome back</p>
         <h1 className="text-2xl font-bold text-ink">Tonight&apos;s plan</h1>
       </header>
+
+      {/* quick actions */}
+      <div className="mb-4 grid grid-cols-2 gap-3">
+        <Link
+          href="/scan"
+          className="flex h-20 flex-col justify-center rounded-2xl bg-brand px-4 text-white active:scale-[.99]"
+        >
+          <span className="text-lg">📸</span>
+          <span className="mt-1 text-sm font-semibold">Scan kitchen</span>
+        </Link>
+        <Link
+          href="/pantry"
+          className="flex h-20 flex-col justify-center rounded-2xl border border-hairline bg-surface px-4 text-ink active:scale-[.99]"
+        >
+          <span className="text-lg">🧺</span>
+          <span className="mt-1 text-sm font-semibold">Your pantry</span>
+        </Link>
+      </div>
 
       {/* Savings highlight — fresh green */}
       <section className="mb-4 rounded-2xl bg-brand p-5 text-white">

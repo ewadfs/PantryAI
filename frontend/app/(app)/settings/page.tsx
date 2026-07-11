@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase";
 
@@ -19,6 +20,23 @@ export default function SettingsPage() {
       <p className="mt-1 text-sm text-ink-soft">
         Your profile, dietary goals, and store preferences will live here.
       </p>
+
+      <div className="mt-6 overflow-hidden rounded-2xl border border-hairline bg-surface">
+        <Link
+          href="/pantry"
+          className="flex h-14 items-center justify-between px-4 text-base font-medium text-ink active:bg-canvas"
+        >
+          <span>🧺 Your pantry</span>
+          <span className="text-ink-faint">›</span>
+        </Link>
+        <Link
+          href="/scan"
+          className="flex h-14 items-center justify-between border-t border-hairline px-4 text-base font-medium text-ink active:bg-canvas"
+        >
+          <span>📸 Scan your kitchen</span>
+          <span className="text-ink-faint">›</span>
+        </Link>
+      </div>
 
       <div className="mt-6 rounded-2xl border border-hairline bg-surface p-2">
         <button

@@ -52,6 +52,12 @@ export type CompleteResponse = { items_added_to_pantry: number };
 export type StoreLocation = {
   id: number;
   store_name: string | null;
+  address: string | null;
+  city: string | null;
+  state: string | null;
+  zip_code: string | null;
+  is_active: boolean;
+  chain_id: number;
   chain_name: string | null;
   chain_slug: string | null;
 };

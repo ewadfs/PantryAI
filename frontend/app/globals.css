@@ -62,6 +62,21 @@ body {
   }
 }
 
+.input {
+  height: 3rem;
+  width: 100%;
+  border-radius: 1rem;
+  border: 1px solid var(--color-hairline);
+  background: var(--color-surface);
+  padding: 0 0.875rem;
+  font-size: 1rem;
+  color: var(--color-ink);
+  outline: none;
+}
+.input:focus {
+  border-color: var(--color-brand);
+}
+
 .skeleton {
   position: relative;
   overflow: hidden;

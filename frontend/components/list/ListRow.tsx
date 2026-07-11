@@ -30,15 +30,19 @@ export default function ListRow({
         aria-label={`${item.is_checked ? "Uncheck" : "Check"} ${item.display_name ?? "item"}`}
         disabled={pending}
         onClick={() => onToggle(!item.is_checked)}
-        className={`mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-lg border-2 transition active:scale-90 ${
-          item.is_checked ? "border-brand bg-brand text-white" : "border-hairline bg-surface"
-        }`}
+        className="-m-2 flex h-11 w-11 shrink-0 items-center justify-center p-2 active:scale-90"
       >
-        {item.is_checked && (
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
-            <path d="M20 6 9 17l-5-5" />
-          </svg>
-        )}
+        <span
+          className={`flex h-7 w-7 items-center justify-center rounded-lg border-2 transition ${
+            item.is_checked ? "border-brand bg-brand text-white" : "border-hairline bg-surface"
+          }`}
+        >
+          {item.is_checked && (
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+              <path d="M20 6 9 17l-5-5" />
+            </svg>
+          )}
+        </span>
       </button>
 
       <div className="min-w-0 flex-1">

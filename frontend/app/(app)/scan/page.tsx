@@ -144,6 +144,9 @@ export default function ScanPage() {
         confirmed: items.map(({ id: _id, freshness: _f, ...rest }) => rest),
       });
       setSavedCount(res.active_items);
+      if (typeof window !== "undefined") {
+        localStorage.setItem("pantryai:lastScanAt", new Date().toISOString());
+      }
       setStep("success");
     } catch (e) {
       setError(e instanceof Error ? e.message : "Could not save.");

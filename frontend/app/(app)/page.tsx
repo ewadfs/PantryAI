@@ -138,12 +138,13 @@ export default function HomePage() {
             {useSoon.length > 0 && (
               <div className="mt-3 flex flex-wrap gap-2">
                 {useSoon.slice(0, 6).map((it) => (
-                  <span
+                  <Link
                     key={it.id}
-                    className="rounded-full bg-warn-soft px-2.5 py-1 text-xs font-medium text-warn"
+                    href={`/recipes?pin=${it.id}&name=${encodeURIComponent(it.name ?? "")}`}
+                    className="rounded-full bg-warn-soft px-2.5 py-1 text-xs font-medium text-warn active:scale-95"
                   >
-                    {it.name}
-                  </span>
+                    🍳 {it.name}
+                  </Link>
                 ))}
               </div>
             )}

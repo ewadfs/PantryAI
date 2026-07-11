@@ -215,6 +215,58 @@ class _Ctx:
     store_name: str | None
     deal_by_ingredient: dict[int, DealCache]
     context_text: str
+    pin_block: str = ""
+
+
+async def _resolve_pins(
+    db: AsyncSession, user_id: int, pinned_ids: list[int]
+) -> list[PantryItem]:
+    """Active pantry items the user pinned. Raises ValueError on any bad id."""
+    if not pinned_ids:
+        return []
+    ids = list(dict.fromkeys(pinned_ids))
+    items = (
+        (
+            await db.execute(
+                select(PantryItem).where(
+                    PantryItem.id.in_(ids),
+                    PantryItem.user_id == user_id,
+                    PantryItem.is_active.is_(True),
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    by_id = {i.id: i for i in items}
+    missing = [i for i in ids if i not in by_id]
+    if missing:
+        raise ValueError(f"Pinned items not found or inactive: {missing}")
+    return [by_id[i] for i in ids]
+
+
+def _pin_dicts(items: list[PantryItem]) -> list[dict]:
+    return [
+        {"name": it.name, "quantity": it.quantity_estimate, "freshness": it.freshness}
+        for it in items
+    ]
+
+
+def _pin_block(pins: list[dict]) -> str:
+    if not pins:
+        return ""
+    lines = "; ".join(
+        f"{p.get('name')} (have {p.get('quantity') or 'some'}, "
+        f"{p.get('freshness') or 'good'})"
+        for p in pins
+    )
+    return (
+        "\n\nHARD REQUIREMENT — the user has designated these pantry items and EVERY "
+        f"recipe MUST make prominent use of ALL of them (not a garnish): {lines}. "
+        "Build each recipe around them. Distribute across main/side within a recipe "
+        "if needed, but NEVER omit one. Pinned items lead the pantry-first priority; "
+        "the protein target and all other constraints still apply."
+    )
 
 
 async def _load_context(db: AsyncSession, user: User) -> _Ctx:
@@ -385,9 +437,14 @@ def _reconcile_ingredients(
 # --------------------------------------------------------------------------- #
 # Stage 1: concepts
 # --------------------------------------------------------------------------- #
-async def generate_concepts(db: AsyncSession, user: User) -> list[Recipe]:
+async def generate_concepts(
+    db: AsyncSession, user: User, pinned_ids: list[int] | None = None
+) -> list[Recipe]:
     """One fast Claude call → 3 persisted concept recipes (status='concept')."""
+    pins = await _resolve_pins(db, user.id, pinned_ids or [])
+    pin_dicts = _pin_dicts(pins)
     ctx = await _load_context(db, user)
+    ctx.pin_block = _pin_block(pin_dicts)
 
     recent_titles = (
         (
@@ -418,7 +475,7 @@ async def generate_concepts(db: AsyncSession, user: User) -> list[Recipe]:
     client = AsyncAnthropic(api_key=settings.anthropic_api_key)
     data = await _call_json(
         client, model=settings.recipe_model, max_tokens=_CONCEPT_MAX_TOKENS,
-        system=system, user_msg=user_msg,
+        system=system + ctx.pin_block, user_msg=user_msg,
     )
     raw = data.get("recipes", []) if isinstance(data, dict) else []
 
@@ -447,6 +504,7 @@ async def generate_concepts(db: AsyncSession, user: User) -> list[Recipe]:
             tags=r.get("tags"),
             cuisine=(r.get("cuisine") or None),
             generated_store_name=ctx.store_name,
+            pinned_items_json=pin_dicts or None,
             ai_model=settings.recipe_model,
         )
         db.add(recipe)
@@ -499,19 +557,20 @@ async def _call_json(
     return {}
 
 
-async def _detail_call(client: AsyncAnthropic, user_msg: str) -> dict:
-    return await _call_json(
-        client, model=settings.detail_model, max_tokens=_DETAIL_MAX_TOKENS,
-        system=_DETAIL_SYSTEM, user_msg=user_msg,
-    )
-
-
 async def _fill_details(db: AsyncSession, recipes: list[Recipe], ctx: _Ctx) -> None:
     """Generate full details for concept recipes: parallel Claude, serial writes."""
     client = AsyncAnthropic(api_key=settings.anthropic_api_key)
+    detail_system = _DETAIL_SYSTEM + ctx.pin_block
     msgs = [_detail_user_msg(r, ctx) for r in recipes]
     results = await asyncio.gather(
-        *(_detail_call(client, m) for m in msgs), return_exceptions=True
+        *(
+            _call_json(
+                client, model=settings.detail_model, max_tokens=_DETAIL_MAX_TOKENS,
+                system=detail_system, user_msg=m,
+            )
+            for m in msgs
+        ),
+        return_exceptions=True,
     )
 
     for recipe, res in zip(recipes, results):
@@ -558,6 +617,8 @@ async def run_details_bg(user_id: int, recipe_ids: list[int]) -> None:
         if user is None:
             return
         ctx = await _load_context(db, user)
+        # Re-apply the batch's pin requirement to the detail stage.
+        ctx.pin_block = _pin_block(recipes[0].pinned_items_json or [])
         await _fill_details(db, recipes, ctx)
         await db.commit()
 

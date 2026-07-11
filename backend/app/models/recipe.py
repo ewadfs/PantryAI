@@ -46,6 +46,8 @@ class Recipe(Base):
     cuisine: Mapped[str | None] = mapped_column(String(50))
     # Store this batch was anchored to (for the weekly store selector / staleness).
     generated_store_name: Mapped[str | None] = mapped_column(String(200))
+    # Pinned pantry items this batch was built around ("cook with this").
+    pinned_items_json: Mapped[dict | list | None] = mapped_column(JSONB)
     ai_model: Mapped[str | None] = mapped_column(String(50))
     # rating: -1 thumbs down, 1 thumbs up, null unrated
     rating: Mapped[int | None] = mapped_column(SmallInteger)

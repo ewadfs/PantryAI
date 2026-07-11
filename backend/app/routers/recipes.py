@@ -11,6 +11,7 @@ from app.models.pantry import PantryItem
 from app.models.recipe import Recipe, WeekRecipe
 from app.models.user import User
 from app.schemas.recipe import (
+    GenerateRequest,
     GenerateResponse,
     LatestResponse,
     RateRequest,
@@ -46,11 +47,20 @@ async def _owned_recipe(db: AsyncSession, recipe_id: int, user_id: int) -> Recip
 @router.post("/recipes/generate", response_model=GenerateResponse)
 async def generate(
     background_tasks: BackgroundTasks,
+    payload: GenerateRequest | None = None,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> GenerateResponse:
-    """Stage 1: return 3 recipe concepts fast; Stage 2 details run in background."""
-    recipes = await recipe_engine.generate_concepts(db, current_user)
+    """Stage 1: return 3 recipe concepts fast; Stage 2 details run in background.
+
+    Optional ``pinned_pantry_item_ids`` forces every recipe to feature those
+    (up to 3) pantry items.
+    """
+    pinned = payload.pinned_pantry_item_ids if payload else []
+    try:
+        recipes = await recipe_engine.generate_concepts(db, current_user, pinned)
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
     reads = [
         RecipeRead.model_validate(recipe_engine.recipe_to_read(r)) for r in recipes
     ]
@@ -89,9 +99,15 @@ async def latest(
         .all()
     )
     store_name = rows[0].generated_store_name if rows else None
+    pinned = [
+        p.get("name")
+        for p in (rows[0].pinned_items_json or [])
+        if isinstance(p, dict) and p.get("name")
+    ] if rows else []
     return LatestResponse(
         generated_at=newest,
         store_name=store_name,
+        pinned=pinned,
         recipes=[RecipeRead.model_validate(recipe_engine.recipe_to_read(r)) for r in rows],
     )
 

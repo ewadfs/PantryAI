@@ -245,6 +245,14 @@ function Row({
           </button>
         )}
       </div>
+      <Link
+        href={`/recipes?pin=${item.id}&name=${encodeURIComponent(item.name ?? "")}`}
+        aria-label={`Cook with ${item.name ?? "item"}`}
+        title="Cook with this"
+        className="flex h-9 shrink-0 items-center gap-1 rounded-full border border-hairline px-2.5 text-xs font-medium text-ink-soft active:scale-95"
+      >
+        🍳 Cook
+      </Link>
       <button
         aria-label={`Remove ${item.name ?? "item"}`}
         onClick={() => onDelete(item.id)}

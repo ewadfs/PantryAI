@@ -60,6 +60,7 @@ export type GenerateResponse = { recipes: Recipe[] };
 export type LatestResponse = {
   generated_at: string | null;
   store_name: string | null;
+  pinned: string[];
   recipes: Recipe[];
 };
 

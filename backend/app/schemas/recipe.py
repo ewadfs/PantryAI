@@ -81,6 +81,12 @@ class RecipeRead(BaseModel):
     cost: RecipeCost
 
 
+class GenerateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    pinned_pantry_item_ids: list[int] = Field(default_factory=list, max_length=3)
+
+
 class GenerateResponse(BaseModel):
     recipes: list[RecipeRead]
 
@@ -88,6 +94,7 @@ class GenerateResponse(BaseModel):
 class LatestResponse(BaseModel):
     generated_at: datetime | None = None
     store_name: str | None = None
+    pinned: list[str] = Field(default_factory=list)
     recipes: list[RecipeRead]
 
 

@@ -14,13 +14,16 @@ import {
   saveToWeek,
 } from "@/lib/recipeApi";
 import { getMyStores, setDefaultStore } from "@/lib/storesApi";
+import { listPantry } from "@/lib/pantryApi";
 import type { UserStore } from "@/lib/listTypes";
+import type { PantryItem } from "@/lib/types";
 import type { Recipe, WeekResponse } from "@/lib/recipeTypes";
 import RecipeCard from "@/components/recipes/RecipeCard";
 import RecipeSheet from "@/components/recipes/RecipeSheet";
 import StoreSheet from "@/components/recipes/StoreSheet";
 import ThisWeek from "@/components/recipes/ThisWeek";
 import Confetti from "@/components/recipes/Confetti";
+import UseUpRow, { type Pin } from "@/components/recipes/UseUpRow";
 
 const STEPS = [
   "Reading your pantry…",
@@ -58,6 +61,9 @@ export default function RecipesPage() {
   const [storeSheet, setStoreSheet] = useState(false);
   const [switching, setSwitching] = useState(false);
   const [batchStore, setBatchStore] = useState<string | null>(null);
+  const [pins, setPins] = useState<Pin[]>([]);
+  const [pantryItems, setPantryItems] = useState<PantryItem[]>([]);
+  const [batchPins, setBatchPins] = useState<string[]>([]);
   const stepTimer = useRef<ReturnType<typeof setInterval> | null>(null);
   const pollTimer = useRef<ReturnType<typeof setInterval> | null>(null);
 
@@ -65,6 +71,9 @@ export default function RecipesPage() {
   const currentStoreName = currentStore?.store.store_name ?? null;
   const stale =
     !!batchStore && !!currentStoreName && batchStore !== currentStoreName;
+  const pinLabel = pins.length
+    ? `Generate with ${pins[0].name}${pins.length > 1 ? ` (+${pins.length - 1})` : ""}`
+    : null;
 
   const savedIds = useMemo(
     () => new Set((week?.recipes ?? []).map((w) => w.recipe.id)),
@@ -88,10 +97,13 @@ export default function RecipesPage() {
       () => setStep((s) => Math.min(s + 1, STEPS.length - 1)),
       5000,
     );
+    const activePins = pinsRef.current;
     try {
-      const res = await generateRecipes();
+      const res = await generateRecipes(activePins.map((p) => p.id));
       setRecipes(res.recipes);
       setGeneratedAt(res.recipes[0]?.generated_at ?? new Date().toISOString());
+      setBatchPins(activePins.map((p) => p.name));
+      setPins([]); // pins satisfied — clear them
       // Fresh batch is anchored to the current default store.
       setStores((prev) => {
         const name = (prev.find((s) => s.is_default) ?? prev[0])?.store.store_name;
@@ -100,6 +112,7 @@ export default function RecipesPage() {
       });
     } catch (e) {
       setError(e instanceof Error ? e.message : "Could not generate recipes.");
+      // keep pins on failure so the user can retry
     } finally {
       if (stepTimer.current) clearInterval(stepTimer.current);
       setGenerating(false);
@@ -114,6 +127,7 @@ export default function RecipesPage() {
         setRecipes(res.recipes);
         setGeneratedAt(res.generated_at);
         setBatchStore(res.store_name);
+        setBatchPins(res.pinned ?? []);
       }
     } catch {
       /* ignore — user can generate */
@@ -129,6 +143,20 @@ export default function RecipesPage() {
       /* ignore */
     }
   }, []);
+
+  const loadPantry = useCallback(async () => {
+    try {
+      const data = await listPantry();
+      setPantryItems(data.categories.flatMap((c) => c.items));
+    } catch {
+      /* ignore */
+    }
+  }, []);
+
+  const pinsRef = useRef<Pin[]>([]);
+  useEffect(() => {
+    pinsRef.current = pins;
+  }, [pins]);
 
   // Poll for the background batch anchored to the newly-selected store.
   const pollForNewBatch = useCallback((storeName: string) => {
@@ -167,14 +195,21 @@ export default function RecipesPage() {
     }
   }
 
-  // Initial load + optional auto-generate from ?generate=1.
+  // Initial load + optional auto-generate (?generate=1) or pre-pinned item (?pin).
   useEffect(() => {
     loadWeek();
     loadStores();
-    const auto =
-      typeof window !== "undefined" &&
-      new URLSearchParams(window.location.search).get("generate") === "1";
-    if (auto) {
+    loadPantry();
+    const params =
+      typeof window !== "undefined"
+        ? new URLSearchParams(window.location.search)
+        : new URLSearchParams();
+    const pinId = params.get("pin");
+    if (pinId) {
+      setPins([{ id: Number(pinId), name: params.get("name") || "item" }]);
+      window.history.replaceState({}, "", "/recipes");
+    }
+    if (params.get("generate") === "1") {
       window.history.replaceState({}, "", "/recipes");
       setWarming(false);
       generate();
@@ -302,6 +337,19 @@ export default function RecipesPage() {
         onBuildList={onBuildList}
       />
 
+      {!generating && (
+        <UseUpRow
+          pins={pins}
+          pantryItems={pantryItems}
+          onAdd={(p) =>
+            setPins((prev) =>
+              prev.length < 3 && !prev.some((x) => x.id === p.id) ? [...prev, p] : prev,
+            )
+          }
+          onRemove={(id) => setPins((prev) => prev.filter((x) => x.id !== id))}
+        />
+      )}
+
       {/* Warm-load placeholder */}
       {warming && !recipes && !generating && (
         <div className="flex flex-col gap-4">
@@ -322,7 +370,7 @@ export default function RecipesPage() {
             onClick={generate}
             className="mt-5 flex h-14 w-full items-center justify-center rounded-2xl bg-brand text-base font-semibold text-white shadow-lg shadow-brand/25 active:scale-[.99]"
           >
-            🍳 Generate 3 recipes
+            {pinLabel ?? "🍳 Generate 3 recipes"}
           </button>
         </div>
       )}
@@ -346,6 +394,11 @@ export default function RecipesPage() {
 
       {recipes && !generating && (
         <div>
+          {batchPins.length > 0 && (
+            <p className="mb-2 text-sm font-semibold text-brand-dark">
+              Built around: {batchPins.join(", ")}
+            </p>
+          )}
           {stale ? (
             <div className="mb-3 rounded-xl bg-warn-soft px-4 py-3 text-sm text-warn">
               These were generated for {batchStore}. New {currentStoreName} recipes
@@ -372,12 +425,13 @@ export default function RecipesPage() {
           <button
             onClick={generate}
             className={`mt-4 flex h-12 w-full items-center justify-center rounded-2xl text-sm font-semibold active:scale-[.99] ${
-              stale
+              pinLabel || stale
                 ? "bg-brand text-white shadow-lg shadow-brand/25"
                 : "border border-hairline bg-surface text-ink"
             }`}
           >
-            {stale ? `Get ${currentStoreName} recipes` : "Show me different options"}
+            {pinLabel ??
+              (stale ? `Get ${currentStoreName} recipes` : "Show me different options")}
           </button>
         </div>
       )}

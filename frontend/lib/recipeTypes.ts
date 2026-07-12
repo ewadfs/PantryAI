@@ -27,12 +27,24 @@ export type Nutrition = {
   carbs_g: number | null;
   fat_g: number | null;
   fiber_g: number | null;
+  // 'calculated' = deterministic USDA compute; 'est' = model estimate; null on
+  // concept-stage rows. coverage present only when calculated.
+  source?: "calculated" | "est" | null;
+  coverage?: number | null;
 };
 
 export type RecipeCost = {
   known_buy_cost: string | number;
   unknown_priced_items: number;
   pantry_items_used: number;
+};
+
+export type MarketAnchor = {
+  name: string;
+  sale_price: string | number | null;
+  price_unit: string | null;
+  savings_pct: number | null;
+  store: string | null;
 };
 
 export type Recipe = {
@@ -55,6 +67,8 @@ export type Recipe = {
   rating: number | null;
   generated_at: string | null;
   cost: RecipeCost;
+  is_market_pick: boolean;
+  market_anchor: MarketAnchor | null;
 };
 
 export type GenerateResponse = { recipes: Recipe[] };

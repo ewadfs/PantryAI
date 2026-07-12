@@ -1,7 +1,15 @@
 "use client";
 
 import type { Recipe } from "@/lib/recipeTypes";
-import { CostLine, DifficultyPill, PantryLine, metaLine, nutritionLine } from "./ui";
+import {
+  CostLine,
+  DifficultyPill,
+  MarketPickBadge,
+  PantryLine,
+  marketAnchorLine,
+  metaLine,
+  nutritionLine,
+} from "./ui";
 
 export default function RecipeCard({
   recipe,
@@ -23,11 +31,17 @@ export default function RecipeCard({
     <article className="rounded-2xl border border-hairline bg-surface p-5 shadow-sm">
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
-          <DifficultyPill difficulty={recipe.difficulty} />
+          <div className="flex flex-wrap items-center gap-2">
+            <DifficultyPill difficulty={recipe.difficulty} />
+            {recipe.is_market_pick && <MarketPickBadge />}
+          </div>
           <h3 className="mt-2 text-lg font-bold leading-snug text-ink">{recipe.title}</h3>
         </div>
       </div>
 
+      {marketAnchorLine(recipe) && (
+        <p className="mt-1 text-sm font-medium text-warn">{marketAnchorLine(recipe)}</p>
+      )}
       <p className="mt-1 text-sm text-ink-soft">{metaLine(recipe)}</p>
       {nutritionLine(recipe) && (
         <p className="mt-0.5 text-sm text-ink-soft">{nutritionLine(recipe)}</p>

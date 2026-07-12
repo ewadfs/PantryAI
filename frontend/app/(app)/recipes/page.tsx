@@ -258,6 +258,63 @@ export default function RecipesPage() {
     pinsRef.current = pins;
   }, [pins]);
 
+  // Merge a freshly-detailed recipe into the shown batch (from the sheet's poll).
+  const mergeRecipe = useCallback((fresh: Recipe) => {
+    setRecipes((prev) =>
+      prev
+        ? prev.map((r) =>
+            r.id === fresh.id ? { ...fresh, rating: r.rating ?? fresh.rating } : r,
+          )
+        : prev,
+    );
+    setSelected((prev) => (prev && prev.id === fresh.id ? fresh : prev));
+  }, []);
+
+  // B4 sync bug: concept cards show the model's estimate; once details land
+  // (status='ready') the card must re-render with the CALCULATED nutrition and
+  // reconciled cost. Poll /latest and merge until the eager slots are detailed
+  // (lazy concepts stay concepts until tapped, so cap the poll window).
+  const recipesRef = useRef<Recipe[] | null>(null);
+  useEffect(() => {
+    recipesRef.current = recipes;
+  }, [recipes]);
+  useEffect(() => {
+    if (!generatedAt) return;
+    if (pollTimer.current) clearInterval(pollTimer.current);
+    if (!recipesRef.current?.some((r) => r.status === "concept")) return;
+    let polls = 0;
+    const MAX_POLLS = 24; // ~60s at 2.5s — covers eager detail generation
+    pollTimer.current = setInterval(async () => {
+      polls += 1;
+      const anyConcept =
+        recipesRef.current?.some((r) => r.status === "concept") ?? false;
+      if (!anyConcept || polls > MAX_POLLS) {
+        if (pollTimer.current) clearInterval(pollTimer.current);
+        return;
+      }
+      try {
+        const res = await getLatestRecipes();
+        if (res.generated_at !== generatedAt) return; // different batch — ignore
+        const byId = new Map(res.recipes.map((r) => [r.id, r]));
+        setRecipes((prev) =>
+          prev
+            ? prev.map((r) => {
+                const fresh = byId.get(r.id);
+                return fresh && fresh.status === "ready"
+                  ? { ...fresh, rating: r.rating ?? fresh.rating }
+                  : r;
+              })
+            : prev,
+        );
+      } catch {
+        /* keep polling */
+      }
+    }, 2500);
+    return () => {
+      if (pollTimer.current) clearInterval(pollTimer.current);
+    };
+  }, [generatedAt]);
+
   async function onSelectStore(id: number) {
     setSwitching(true);
     setError(null);
@@ -581,6 +638,7 @@ export default function RecipesPage() {
           saved={savedIds.has(selected.id)}
           onSave={() => onSave(selected.id)}
           onClose={() => setSelected(null)}
+          onUpdate={mergeRecipe}
         />
       )}
 

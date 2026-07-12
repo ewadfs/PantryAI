@@ -39,13 +39,20 @@ export function metaLine(r: Recipe): string {
   return parts.join(" · ");
 }
 
+/** Label for a nutrition figure: deterministic USDA compute vs model estimate. */
+export function nutritionTag(r: Recipe): "calculated" | "est." {
+  return r.nutrition_per_serving?.source === "calculated" ? "calculated" : "est.";
+}
+
 export function nutritionLine(r: Recipe): string | null {
   const n = r.nutrition_per_serving;
   if (!n || (n.calories == null && n.protein_g == null)) return null;
   const bits: string[] = [];
   if (n.calories != null) bits.push(`${Math.round(n.calories)} cal`);
   if (n.protein_g != null) bits.push(`${Math.round(n.protein_g)}g protein`);
-  return `≈ ${bits.join(" · ")} · est.`;
+  const calc = n.source === "calculated";
+  // "≈" only for estimates; a computed figure is exact enough to stand plain.
+  return `${calc ? "" : "≈ "}${bits.join(" · ")} · ${calc ? "calculated" : "est."}`;
 }
 
 /** Honest cost line — never invents a total. */
@@ -78,6 +85,25 @@ export function CostLine({ recipe }: { recipe: Recipe }) {
         </span>
       )}
     </div>
+  );
+}
+
+/** "Built around: pork shoulder, $1.99/lb this week" for a market pick. */
+export function marketAnchorLine(r: Recipe): string | null {
+  if (!r.is_market_pick || !r.market_anchor) return null;
+  const a = r.market_anchor;
+  const price =
+    a.sale_price != null
+      ? `$${Number(a.sale_price).toFixed(2)}${a.price_unit ? `/${a.price_unit}` : ""}`
+      : null;
+  return `Built around: ${a.name}${price ? `, ${price} this week` : ""}`;
+}
+
+export function MarketPickBadge() {
+  return (
+    <span className="inline-flex items-center rounded-full bg-warn-soft px-2 py-1 text-[11px] font-semibold text-warn">
+      🏷️ Market pick
+    </span>
   );
 }
 

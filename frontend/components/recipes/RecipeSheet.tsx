@@ -4,7 +4,14 @@ import { useEffect, useRef, useState } from "react";
 import { getRecipe } from "@/lib/recipeApi";
 import { comparePricesForRecipe, type PriceCompareResponse } from "@/lib/pricesApi";
 import type { Recipe } from "@/lib/recipeTypes";
-import { DifficultyPill, metaLine, nutritionLine } from "./ui";
+import {
+  DifficultyPill,
+  MarketPickBadge,
+  marketAnchorLine,
+  metaLine,
+  nutritionLine,
+  nutritionTag,
+} from "./ui";
 
 type LooseIng = {
   generic_name?: string | null;
@@ -118,11 +125,15 @@ export default function RecipeSheet({
   saved,
   onSave,
   onClose,
+  onUpdate,
 }: {
   recipe: Recipe;
   saved: boolean;
   onSave: () => void;
   onClose: () => void;
+  // Push freshly-detailed data back up so the card behind the sheet re-renders
+  // (B4: no stale concept nutrition/cost once details land).
+  onUpdate?: (r: Recipe) => void;
 }) {
   const [data, setData] = useState<Recipe>(recipe);
   const [prices, setPrices] = useState<PriceCompareResponse | null>(null);
@@ -146,6 +157,7 @@ export default function RecipeSheet({
         const fresh = await getRecipe(data.id);
         if (fresh.status === "ready") {
           setData(fresh);
+          onUpdate?.(fresh);
           if (timer.current) clearInterval(timer.current);
         }
       } catch {
@@ -191,8 +203,14 @@ export default function RecipeSheet({
         </div>
 
         <div className="px-5 pt-4">
-          <DifficultyPill difficulty={data.difficulty} />
+          <div className="flex flex-wrap items-center gap-2">
+            <DifficultyPill difficulty={data.difficulty} />
+            {data.is_market_pick && <MarketPickBadge />}
+          </div>
           <h2 className="mt-2 text-2xl font-bold text-ink">{data.title}</h2>
+          {marketAnchorLine(data) && (
+            <p className="mt-1 text-sm font-medium text-warn">{marketAnchorLine(data)}</p>
+          )}
           <p className="mt-1 text-sm text-ink-soft">{metaLine(data)}</p>
           {nutritionLine(data) && (
             <p className="text-sm text-ink-soft">{nutritionLine(data)}</p>
@@ -257,7 +275,7 @@ export default function RecipeSheet({
           {n && (
             <>
               <h3 className="mt-6 text-sm font-semibold uppercase tracking-wide text-ink-faint">
-                Nutrition (per serving, est.)
+                Nutrition (per serving, {nutritionTag(data)})
               </h3>
               <div className="mt-2 grid grid-cols-5 gap-2 text-center">
                 {[

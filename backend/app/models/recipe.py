@@ -58,6 +58,13 @@ class Recipe(Base):
     critic_json: Mapped[dict | list | None] = mapped_column(JSONB)
     # Variety signature: {anchor_ingredient, dish_format, cuisine}.
     signature_json: Mapped[dict | list | None] = mapped_column(JSONB)
+    # Market pick (Prompt 28 A): a recipe anchored on a current deal the user
+    # does NOT own — the intentional purchase. market_anchor:
+    # {name, ingredient_id, sale_price, price_unit, savings_pct, store}.
+    is_market_pick: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=text("false")
+    )
+    market_anchor_json: Mapped[dict | None] = mapped_column(JSONB)
     # rating: -1 thumbs down, 1 thumbs up, null unrated
     rating: Mapped[int | None] = mapped_column(SmallInteger)
     generated_at: Mapped[datetime] = mapped_column(

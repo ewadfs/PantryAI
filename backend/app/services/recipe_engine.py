@@ -28,7 +28,7 @@ from app.models.pantry import PantryItem
 from app.models.recipe import Recipe, WeekRecipe
 from app.models.store import StoreLocation, SupportedChain, UserStore
 from app.models.user import User
-from app.services import ai_metering, ingredient_matcher, quantities
+from app.services import ai_metering, ingredient_matcher, nutrition, quantities
 from app.services.vision import _extract_json
 
 logger = logging.getLogger(__name__)
@@ -96,10 +96,13 @@ total_time_min MUST include passive time (water boiling, oven preheat, rests) �
 BE TERSE — this is a fast preview, not the full recipe. description ≤ 12 words; \
 why_this_recipe ≤ 14 words; at most 3 tags. No extra prose or explanation.
 
+Set market_pick true ONLY on a concept the request explicitly designates as a \
+MARKET PICK (default false).
+
 Return ONLY valid JSON:
 {"recipes":[{title, description, difficulty, prep_time_min, cook_time_min, \
 total_time_min, servings, why_this_recipe, cuisine, dish_format, anchor_ingredient, \
-tags:[...], nutrition_per_serving:{calories, protein_g}, \
+market_pick, tags:[...], nutrition_per_serving:{calories, protein_g}, \
 key_ingredients:[{generic_name, brand, in_pantry, on_sale, sale_price}]}]}"""
 )
 
@@ -253,6 +256,160 @@ def _relevant_deals(deals: list[DealCache], pantry: list[PantryItem]) -> list[De
     ]
     picked.sort(key=lambda d: -(float(d.savings_pct) if d.savings_pct is not None else 0.0))
     return picked[:_CONTEXT_DEALS]
+
+
+# --------------------------------------------------------------------------- #
+# Market picks (Prompt 28 A) — deal-anchored recipes when the pantry lacks
+# distinct anchors, or (for N=5) always at least one, so deals can LEAD.
+# --------------------------------------------------------------------------- #
+_PROTEIN_CATS = {"meat", "seafood", "eggs", "protein"}
+# Produce hearty enough to anchor a dinner (a "hero" vegetable).
+_HERO_PRODUCE = {
+    "portobello_mushroom", "white_mushroom", "mushroom", "butternut_squash",
+    "eggplant", "cauliflower", "sweet_potato", "russet_potato", "yukon_gold_potato",
+    "red_potato", "zucchini", "cabbage", "broccoli",
+}
+_HERO_IIDS: set[int] | None = None
+
+
+def _hero_produce_iids() -> set[int]:
+    """Ingredient ids of hero (dinner-anchorable) produce. Lazy — needs the
+    ingredient_matcher cache preloaded (it is, before generation)."""
+    global _HERO_IIDS
+    if _HERO_IIDS is None:
+        ids: set[int] = set()
+        for name in _HERO_PRODUCE:
+            iid, _c = ingredient_matcher.match_ingredient(name)
+            if iid is not None:
+                ids.add(iid)
+        _HERO_IIDS = ids
+    return _HERO_IIDS
+
+
+def _anchor_sufficient(item: PantryItem, household: int) -> bool:
+    """Is a pantry item present in enough quantity to ANCHOR a dinner?"""
+    q = quantities.parse(item.quantity_estimate, item.unit)
+    if q is None:
+        return True  # present but amount unknown — assume it can anchor
+    hh = max(1, household)
+    if q.family == "weight":
+        return q.value >= hh * 4.0  # ≥4 oz/serving of a main protein
+    if q.family == "count":
+        return q.value >= hh
+    return True  # container / volume — assume viable
+
+
+def _anchor_census(pantry: list[PantryItem], household: int) -> set[str]:
+    """Distinct viable anchor keys (proteins + hero produce) in the pantry."""
+    keys: set[str] = set()
+    for it in pantry:
+        cat = (it.category or "").lower()
+        norm = ingredient_matcher._norm(it.name or "")
+        is_protein = cat in _PROTEIN_CATS
+        is_hero = cat == "produce" and norm in _HERO_PRODUCE
+        if not (is_protein or is_hero):
+            continue
+        if not _anchor_sufficient(it, household):
+            continue
+        iid, _c = ingredient_matcher.match_ingredient(it.name or "")
+        keys.add(f"i{iid}" if iid is not None else norm)
+    return keys
+
+
+def _market_slot_count(n: int, anchors: int) -> int:
+    """How many of the N slots become market picks. Surplus slots (beyond
+    distinct pantry anchors) convert; N=5 always reserves ≥1 even at full
+    diversity; N=3 keeps one only when anchors < 3 (which the surplus already
+    captures)."""
+    slots = max(n - anchors, 0)
+    if n == 5:
+        slots = max(slots, 1)
+    return min(slots, n)
+
+
+def _select_market_deals(
+    all_deals: list[DealCache],
+    count: int,
+    exclude_iids: set[int],
+    pantry_iids: set[int],
+) -> list[DealCache]:
+    """Pick ``count`` distinct deal anchors: proteins then hero produce, matched
+    to an ingredient and savings-ranked, never something already in the pantry.
+    Prefers anchors NOT used as market picks in recent batches (rotation, A5),
+    backfilling with recent ones only if there aren't enough fresh alternatives."""
+    if count <= 0:
+        return []
+    hero = _hero_produce_iids()
+
+    def tier(d: DealCache) -> int:
+        cat = (d.category or "").lower()
+        if cat in {"meat", "seafood"}:
+            return 0  # proteins lead
+        if cat == "produce" and d.matched_ingredient_id in hero:
+            return 1  # hero produce (cauliflower, squash, potato…)
+        if cat == "produce":
+            return 2  # other produce, last resort
+        return 9
+
+    candidates = [
+        d
+        for d in all_deals
+        if d.matched_ingredient_id is not None
+        and d.matched_ingredient_id not in pantry_iids
+        and tier(d) < 9
+    ]
+    # Quality tier first, then higher savings within a tier.
+    candidates.sort(
+        key=lambda d: (tier(d), -(float(d.savings_pct) if d.savings_pct is not None else 0.0))
+    )
+    ordered: list[DealCache] = []
+    seen: set[int] = set()
+    for d in candidates:
+        iid = d.matched_ingredient_id
+        if iid in seen:
+            continue
+        seen.add(iid)
+        ordered.append(d)
+    fresh = [d for d in ordered if d.matched_ingredient_id not in exclude_iids]
+    stale = [d for d in ordered if d.matched_ingredient_id in exclude_iids]
+    chosen = fresh[:count]
+    if len(chosen) < count:
+        chosen += stale[: count - len(chosen)]  # rotation backfill
+    return chosen
+
+
+def _market_block(deals: list[DealCache], chain_name: str | None) -> str:
+    if not deals:
+        return ""
+    lines = []
+    for d in deals:
+        unit = f"/{d.price_unit}" if d.price_unit else ""
+        sav = f", {d.savings_pct}% off" if d.savings_pct is not None else ""
+        lines.append(f"- {d.product_name}: ${d.sale_price}{unit}{sav}")
+    return (
+        f"\n\nMARKET PICKS — this batch MUST include exactly {len(deals)} MARKET PICK "
+        f"concept(s). A market pick is a dinner ANCHORED on a strong current deal at "
+        f"{chain_name or 'the store'} that the user does NOT own — it is the intentional "
+        "purchase of the week, chosen to LEAD the recipe (not fill a gap). Build each "
+        "market pick around ONE of these deal anchors, then surround it with pantry "
+        "items:\n" + "\n".join(lines) + "\n"
+        "For each market-pick concept: set anchor_ingredient to that deal item, set "
+        "\"market_pick\": true, and in why_this_recipe name the deal and its price "
+        "(e.g. \"built around pork shoulder at $1.99/lb this week\"). The pantry-first "
+        "rule (#2) is WAIVED for a market pick's anchor — buying it is the point. Every "
+        "OTHER concept stays pantry-first. No two market picks may share an anchor."
+    )
+
+
+def _is_market_anchor(anchor_name: str, market_iids: set[int], pantry_iids: set[int]) -> int | None:
+    """If ``anchor_name`` matches a designated market deal the user doesn't own,
+    return its ingredient id, else None."""
+    if not anchor_name:
+        return None
+    iid, _c = ingredient_matcher.match_ingredient(anchor_name)
+    if iid is not None and iid in market_iids and iid not in pantry_iids:
+        return iid
+    return None
 
 
 def _protein_block(floor: int) -> str:
@@ -412,6 +569,9 @@ class _Ctx:
     direction: str = ""
     pantry_by_iid: dict[int, PantryItem] = field(default_factory=dict)
     pantry_by_norm: dict[str, PantryItem] = field(default_factory=dict)
+    all_deals: list[DealCache] = field(default_factory=list)
+    # Deals designated as this batch's market-pick anchors (Prompt 28 A).
+    market_deals: list[DealCache] = field(default_factory=list)
 
 
 async def _resolve_pins(
@@ -468,6 +628,7 @@ def _pin_block(pins: list[dict]) -> str:
 async def _load_context(db: AsyncSession, user: User) -> _Ctx:
     today = date.today()
     await ingredient_matcher.preload(db)
+    await nutrition.preload(db)
 
     pantry = (
         (
@@ -513,6 +674,7 @@ async def _load_context(db: AsyncSession, user: User) -> _Ctx:
         taste_block=_taste_block(user.taste_notes),
         pantry_by_iid=pantry_by_iid,
         pantry_by_norm=pantry_by_norm,
+        all_deals=list(all_deals),
     )
 
 
@@ -666,6 +828,30 @@ async def _build_taste_history(
     return history_block, variety_block, recent_struct
 
 
+async def _recent_market_anchors(db: AsyncSession, user_id: int) -> set[int]:
+    """Ingredient ids used as market-pick anchors in the last few batches, so a
+    new batch can rotate to different deals (A5)."""
+    cutoff = _now() - timedelta(hours=_RECENT_HOURS)
+    rows = (
+        (
+            await db.execute(
+                select(Recipe.market_anchor_json).where(
+                    Recipe.user_id == user_id,
+                    Recipe.is_market_pick.is_(True),
+                    Recipe.generated_at >= cutoff,
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    iids: set[int] = set()
+    for a in rows:
+        if isinstance(a, dict) and isinstance(a.get("ingredient_id"), int):
+            iids.add(a["ingredient_id"])
+    return iids
+
+
 def _build_context(
     pantry: list[PantryItem], deals: list[DealCache], chain_name: str | None, today: date
 ) -> str:
@@ -746,6 +932,8 @@ def recipe_to_read(recipe: Recipe) -> dict:
         "rating": recipe.rating,
         "generated_at": recipe.generated_at,
         "cost": _cost_from_ingredients(cost_source),
+        "is_market_pick": bool(recipe.is_market_pick),
+        "market_anchor": recipe.market_anchor_json,
     }
 
 
@@ -864,7 +1052,7 @@ def _profile_text(user: User, ctx: _Ctx) -> str:
     return "\n".join(lines) + ctx.taste_block + ctx.history_block
 
 
-def _needs_revision(review: dict) -> bool:
+def _needs_revision(review: dict, is_market: bool = False) -> bool:
     try:
         score = int(review.get("score"))
     except (TypeError, ValueError):
@@ -874,7 +1062,10 @@ def _needs_revision(review: dict) -> bool:
         for x in (review.get("fail_rubrics") or [])
         if str(x).strip().lstrip("-").isdigit()
     }
-    hard = bool(fails & {1, 4, 5, 6})
+    # A market pick's anchor is an intentional purchase — a lone rubric-6
+    # (pantry-realism) flag on it is expected, not a defect.
+    hard_set = {1, 4, 5} if is_market else {1, 4, 5, 6}
+    hard = bool(fails & hard_set)
     return score < 7 or hard or review.get("verdict") == "revise"
 
 
@@ -894,13 +1085,23 @@ async def _run_critic(
     floor: int,
     profile_text: str,
     pantry_lines: str = "",
+    market_idx: list[int] | None = None,
 ) -> list[dict]:
     briefs = [_concept_brief(c) for c in concepts]
+    market_note = ""
+    if market_idx:
+        market_note = (
+            f"\nMARKET PICKS at indices {sorted(market_idx)}: each is anchored on a "
+            "current store DEAL the user intentionally buys — do NOT fail these on "
+            "rubric 6 (pantry realism) or rubric 2 for the anchor NOT being in the "
+            "pantry. Judge the rest of the dish normally.\n"
+        )
     user_msg = (
         f"PROTEIN FLOOR: {floor} g per serving.\n"
         f"DINER PROFILE:\n{profile_text}\n\n"
         f"THEIR PANTRY (with quantities — check rubric 6 against these numbers):\n"
-        f"{pantry_lines or '- (unknown)'}\n\n"
+        f"{pantry_lines or '- (unknown)'}\n"
+        f"{market_note}\n"
         f"CONCEPTS (0-indexed):\n{json.dumps(briefs, ensure_ascii=False)}\n\n"
         "Review each concept now."
     )
@@ -952,9 +1153,13 @@ async def _critique_and_fix(
     base_system: str,
     ctx_text: str,
     pantry_lines: str = "",
+    market_idx: list[int] | None = None,
 ) -> tuple[list[dict], list[dict]]:
     """Score concepts, regenerate weak ones once, return (concepts, critic_meta)."""
-    reviews = await _run_critic(client, concepts, floor, profile_text, pantry_lines)
+    reviews = await _run_critic(
+        client, concepts, floor, profile_text, pantry_lines, market_idx
+    )
+    market_set = set(market_idx or [])
     by_index: dict[int, dict] = {}
     for rv in reviews:
         if not isinstance(rv, dict):
@@ -966,7 +1171,7 @@ async def _critique_and_fix(
 
     regen_idx = [
         i for i in range(len(concepts))
-        if by_index.get(i) and _needs_revision(by_index[i])
+        if by_index.get(i) and _needs_revision(by_index[i], is_market=i in market_set)
     ]
     if regen_idx:
         fixed = await asyncio.gather(
@@ -1123,10 +1328,28 @@ async def generate_concepts(
 
     n = _clamp_n(user.recipes_per_generation)
     tiers = _clean_difficulties(difficulties)
+
+    # Market picks (A1/A2): census the pantry's distinct viable anchors, convert
+    # the surplus slots to deal-anchored picks, and select this batch's anchors
+    # (rotating away from recent ones). Deals can LEAD, not just fill gaps.
+    pantry_iids = set(ctx.pantry_by_iid.keys())
+    census = _anchor_census(ctx.pantry, user.household_size or 2)
+    market_slots = _market_slot_count(n, len(census))
+    recent_market = await _recent_market_anchors(db, user.id)
+    ctx.market_deals = _select_market_deals(
+        ctx.all_deals, market_slots, recent_market, pantry_iids
+    )
+    market_iids = {d.matched_ingredient_id for d in ctx.market_deals}
+    logger.info(
+        "Market picks: n=%d pantry_anchors=%d slots=%d selected=%s",
+        n, len(census), market_slots,
+        [d.product_name for d in ctx.market_deals],
+    )
+
     # Cache layers: L1 = static rules (_CONCEPT_SYSTEM), L2 = slow-changing
     # context (profile + protein floor + taste + rating history + pantry/deals).
-    # Per-press variables (tier plan, recent titles, variety, direction, pins)
-    # live in the user message so the cached prefix survives across presses.
+    # Per-press variables (tier plan, recent titles, variety, direction, pins,
+    # market picks) live in the user message so the cached prefix survives.
     concept_l2 = (
         _concept_profile(user)
         + _protein_block(ctx.protein_floor)
@@ -1141,6 +1364,7 @@ async def generate_concepts(
         f"{_tier_plan_text(n, tiers)}.\n"
         f"Avoid repeating these recent titles: {_fmt_list(list(recent_titles))}."
         + ctx.variety_block
+        + _market_block(ctx.market_deals, ctx.chain_name)
         + _direction_block(ctx.direction)
         + ctx.pin_block
         + f"\n\nPropose tonight's {n} dinner concepts now."
@@ -1156,12 +1380,19 @@ async def generate_concepts(
         raw = [r for r in (data.get("recipes", []) if isinstance(data, dict) else [])
                if isinstance(r, dict)][:n]
 
-        # Stage 1.5 critic: score, then regenerate weak concepts once.
+        # Stage 1.5 critic: score, then regenerate weak concepts once. Market
+        # picks are exempt from pantry-realism penalties on their anchor.
         critics: list[dict] = [{} for _ in raw]
         if raw:
+            market_idx = [
+                i for i, c in enumerate(raw)
+                if _is_market_anchor(c.get("anchor_ingredient") or "", market_iids, pantry_iids)
+                is not None
+            ]
             raw, critics = await _critique_and_fix(
                 client, raw, ctx.protein_floor, _profile_text(user, ctx),
                 system_blocks, user_msg, _pantry_qty_lines(ctx.pantry),
+                market_idx=market_idx,
             )
             # Variety guard: never re-serve a recent signature under a new name,
             # and keep the batch mutually distinct (each concept differs from
@@ -1176,6 +1407,26 @@ async def generate_concepts(
             if isinstance(k, dict)
         ]
         cuisine = (r.get("cuisine") or None)
+        # Market pick when the concept's anchor matches a designated deal the
+        # user doesn't own (source of truth: OUR deal cache, not the model flag).
+        anchor_name = r.get("anchor_ingredient") or ""
+        m_iid = _is_market_anchor(anchor_name, market_iids, pantry_iids)
+        market_anchor = None
+        if m_iid is not None:
+            deal = next(
+                (d for d in ctx.market_deals if d.matched_ingredient_id == m_iid), None
+            )
+            if deal is not None:
+                market_anchor = {
+                    "name": anchor_name or deal.product_name,
+                    "ingredient_id": m_iid,
+                    "sale_price": str(deal.sale_price),
+                    "price_unit": deal.price_unit,
+                    "savings_pct": (
+                        float(deal.savings_pct) if deal.savings_pct is not None else None
+                    ),
+                    "store": ctx.chain_name,
+                }
         recipe = Recipe(
             user_id=user.id,
             status="concept",
@@ -1201,6 +1452,8 @@ async def generate_concepts(
                 "dish_format": r.get("dish_format"),
                 "cuisine": cuisine,
             },
+            is_market_pick=market_anchor is not None,
+            market_anchor_json=market_anchor,
             ai_model=settings.recipe_model,
         )
         db.add(recipe)
@@ -1297,6 +1550,67 @@ def _protein_of(data: dict) -> float | None:
         return None
 
 
+def _model_nutrition(data: dict) -> dict | None:
+    """The model's per-serving estimate, tagged 'est' (used only when computed
+    coverage is too low to trust the deterministic figure)."""
+    n = data.get("nutrition_per_serving") if isinstance(data, dict) else None
+    if not isinstance(n, dict):
+        return None
+    out = {
+        k: n.get(k)
+        for k in ("calories", "protein_g", "carbs_g", "fat_g", "fiber_g")
+        if n.get(k) is not None
+    }
+    out["source"] = "est"
+    return out or None
+
+
+def _reconcile_and_compute(
+    data: dict, recipe: Recipe, ctx: _Ctx
+) -> tuple[list[dict], dict | None, dict | None]:
+    """Reconcile the model's ingredient lines against pantry/deals, then compute
+    deterministic nutrition. Returns (ingredients, model_nutrition, computed)."""
+    raw_ings = data.get("ingredients") if isinstance(data, dict) else None
+    ingredients = _reconcile_ingredients(
+        raw_ings or [], ctx.deal_by_ingredient, ctx.chain_name,
+        ctx.pantry_by_iid, ctx.pantry_by_norm,
+    )
+    if not ingredients:
+        ingredients = _reconcile_ingredients(
+            recipe.key_ingredients_json or [], ctx.deal_by_ingredient, ctx.chain_name,
+            ctx.pantry_by_iid, ctx.pantry_by_norm,
+        )
+    computed = nutrition.compute(ingredients, recipe.servings)
+    return ingredients, _model_nutrition(data), computed
+
+
+def _effective_nutrition(
+    model_nut: dict | None, computed: dict | None
+) -> tuple[dict | None, float | None]:
+    """Policy (P28 B3): when deterministic coverage ≥ threshold, the COMPUTED
+    figure (labeled 'calculated') replaces the model estimate everywhere and
+    drives the protein floor; below it we keep the model numbers ('est'). Never
+    blended. Returns (nutrition_dict_to_store, authoritative_protein_g)."""
+    if computed and computed.get("coverage", 0) >= nutrition.COVERAGE_THRESHOLD:
+        final = {
+            "calories": computed["calories"],
+            "protein_g": computed["protein_g"],
+            "carbs_g": computed["carbs_g"],
+            "fat_g": computed["fat_g"],
+            "fiber_g": computed["fiber_g"],
+            "source": "calculated",
+            "coverage": computed["coverage"],
+        }
+        return final, computed["protein_g"]
+    protein = None
+    if model_nut and model_nut.get("protein_g") is not None:
+        try:
+            protein = float(model_nut["protein_g"])
+        except (TypeError, ValueError):
+            protein = None
+    return model_nut, protein
+
+
 async def _fill_details(
     db: AsyncSession, recipes: list[Recipe], ctx: _Ctx, *, category: str = "generation"
 ) -> None:
@@ -1327,48 +1641,47 @@ async def _fill_details(
 
     for i, (recipe, res) in enumerate(zip(recipes, results)):
         data = res if isinstance(res, dict) else {}
+        ingredients, model_nut, computed = _reconcile_and_compute(data, recipe, ctx)
+        final_nut, protein = _effective_nutrition(model_nut, computed)
 
-        # Protein-floor validation: one corrective regeneration if short.
-        protein = _protein_of(data)
+        # Protein-floor validation on the AUTHORITATIVE figure — the computed
+        # (USDA) protein when coverage is high enough, else the model's estimate.
+        # One corrective regeneration if short; the retry only wins if it beats
+        # the current authoritative protein (never adopt a worse version).
         if floor > 0 and protein is not None and protein < floor:
+            src = (final_nut or {}).get("source", "est")
             correction = (
-                f"\n\nCORRECTION: your previous version delivered only {protein:.0f} g "
-                f"protein per serving, below the required {floor} g floor. Increase or "
-                "add a protein source (pantry proteins first, then on-sale) and "
-                "recompute the nutrition honestly."
+                f"\n\nCORRECTION: this recipe delivers only {protein:.0f} g protein "
+                f"per serving ({src}), below the required {floor} g floor. Increase the "
+                "main protein quantity or add a protein source (pantry proteins first, "
+                "then on-sale) — do NOT merely restate a higher number; the amounts "
+                "must actually change."
             )
             retry = await _call_json(
                 client, model=settings.detail_model, max_tokens=_DETAIL_MAX_TOKENS,
                 system=detail_system, user_msg=msgs[i] + correction, category=category,
             )
             if isinstance(retry, dict) and retry:
-                data = retry
-                protein = _protein_of(data)
+                r_ings, r_model, r_comp = _reconcile_and_compute(retry, recipe, ctx)
+                r_final, r_protein = _effective_nutrition(r_model, r_comp)
+                if r_protein is not None and r_protein >= protein:
+                    data, ingredients, final_nut, protein = (
+                        retry, r_ings, r_final, r_protein
+                    )
             if protein is None or protein < floor:
                 logger.warning(
-                    "Recipe %s (%r) protein %sg still below floor %dg after correction",
+                    "Recipe %s (%r) protein %sg still below floor %dg after correction "
+                    "(nutrition source: %s)",
                     recipe.id, recipe.title,
                     "unknown" if protein is None else f"{protein:.0f}", floor,
+                    (final_nut or {}).get("source", "?"),
                 )
 
-        raw_ings = data.get("ingredients") if isinstance(data, dict) else None
-        ingredients = _reconcile_ingredients(
-            raw_ings or [], ctx.deal_by_ingredient, ctx.chain_name,
-            ctx.pantry_by_iid, ctx.pantry_by_norm,
-        )
-        if not ingredients:
-            # Fallback: derive usable ingredients from the concept's key list so
-            # the recipe is never stuck as a 'concept' / blocking list builds.
-            ingredients = _reconcile_ingredients(
-                recipe.key_ingredients_json or [], ctx.deal_by_ingredient, ctx.chain_name,
-                ctx.pantry_by_iid, ctx.pantry_by_norm,
-            )
         recipe.ingredients_json = ingredients
         instructions = data.get("instructions") if isinstance(data, dict) else None
         recipe.instructions_json = instructions or recipe.instructions_json or []
-        nutrition = data.get("nutrition_per_serving") if isinstance(data, dict) else None
-        if nutrition:
-            recipe.nutrition_json = nutrition
+        if final_nut:
+            recipe.nutrition_json = final_nut
         recipe.ai_model = settings.detail_model
         recipe.status = "ready"
 

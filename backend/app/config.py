@@ -40,6 +40,11 @@ class Settings(BaseSettings):
     # to the seeded store catalog (Prompt 24 B).
     google_places_api_key: str = ""
 
+    # USDA FoodData Central (deterministic nutrition, Prompt 28 B). Used only by
+    # the offline bulk-seed script; runtime nutrition compute reads local macros
+    # off ingredient_master and never calls USDA. Empty → bulk script no-ops.
+    usda_fdc_api_key: str = ""
+
     # Supabase (auth)
     supabase_url: str = ""
     supabase_jwt_secret: str = ""

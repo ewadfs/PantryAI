@@ -52,6 +52,11 @@ class NutritionPerServing(BaseModel):
     carbs_g: float | None = None
     fat_g: float | None = None
     fiber_g: float | None = None
+    # 'calculated' = deterministic USDA compute (coverage ≥ 70%); 'est' = model
+    # estimate. None on legacy/concept rows. ``coverage`` present only when
+    # calculated (fraction of recipe mass with known macros).
+    source: Literal["calculated", "est"] | None = None
+    coverage: float | None = None
 
 
 class RecipeCost(BaseModel):
@@ -60,6 +65,18 @@ class RecipeCost(BaseModel):
     known_buy_cost: Decimal
     unknown_priced_items: int
     pantry_items_used: int
+
+
+class MarketAnchor(BaseModel):
+    """The deal a market-pick recipe is built around (Prompt 28 A)."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    name: str
+    sale_price: Decimal | None = None
+    price_unit: str | None = None
+    savings_pct: float | None = None
+    store: str | None = None
 
 
 class RecipeRead(BaseModel):
@@ -84,6 +101,8 @@ class RecipeRead(BaseModel):
     rating: int | None = None
     generated_at: datetime | None = None
     cost: RecipeCost
+    is_market_pick: bool = False
+    market_anchor: MarketAnchor | None = None
 
 
 class GenerateRequest(BaseModel):

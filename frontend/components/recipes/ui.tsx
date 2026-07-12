@@ -131,6 +131,19 @@ export function MarketPickBadge() {
   );
 }
 
+/** Subtle accent for the all-pantry dish — it leads its tier in the feed and
+ * should read as the headline it is, not the unbadged leftover. */
+export function AllPantryBadge({ recipe }: { recipe: Recipe }) {
+  const known = Number(recipe.cost.known_buy_cost ?? 0);
+  if (known > 0 || recipe.cost.unknown_priced_items > 0) return null;
+  if (effectiveIngredients(recipe).length === 0) return null;
+  return (
+    <span className="inline-flex items-center rounded-full bg-brand-soft px-2 py-1 text-[11px] font-semibold text-brand-dark">
+      🏠 All pantry · $0
+    </span>
+  );
+}
+
 export function PantryLine({ recipe }: { recipe: Recipe }) {
   const ings = effectiveIngredients(recipe);
   const total = ings.length;

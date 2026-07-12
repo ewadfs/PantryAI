@@ -489,19 +489,36 @@ def _market_candidates(
     return out
 
 
+def _same_product(a: MarketCandidate, b: MarketCandidate) -> bool:
+    """Are two candidates the SAME UNDERLYING PRODUCT? Distinct deal rows —
+    even ones matching different ingredient_master variants (chicken_breast
+    vs chicken_tenders) — must not both anchor a batch (Prompt 34 C6: the
+    duplicate-chicken-breast leak). Same iid, or token containment / ≥0.5
+    overlap between the qualifier-stripped names."""
+    if a.iid is not None and a.iid == b.iid:
+        return True
+    ta = set(ingredient_matcher._tokens(a.clean_name or a.deal.product_name or ""))
+    tb = set(ingredient_matcher._tokens(b.clean_name or b.deal.product_name or ""))
+    if not ta or not tb:
+        return False
+    overlap = len(ta & tb) / len(ta | tb)
+    return ta <= tb or tb <= ta or overlap >= 0.5
+
+
 def _select_market_anchors(
     primary: list[MarketCandidate],
     other_stores: list[list[MarketCandidate]],
     count: int,
     exclude_keys: set[str],
 ) -> list[MarketCandidate]:
-    """Pick ``count`` DISTINCT anchors. Order: the anchored store's fresh
-    candidates (not used in recent batches, 28-A5 rotation), then its
-    recently-used ones, then each other saved store's (sparse-store fallback,
-    Prompt 32 #4, clearly labeled). Tier-2 produce (an apple can't anchor a
-    dinner) backfills only after every store's proteins + hero produce are
-    exhausted. Only after every saved store's whole pool is exhausted may an
-    anchor repeat — marked so the disclosure is forced."""
+    """Pick ``count`` anchors that are DISTINCT DEALS **and** DISTINCT
+    UNDERLYING PRODUCTS. Order: the anchored store's fresh candidates (not
+    used in recent batches, 28-A5 rotation), then its recently-used ones,
+    then each other saved store's (sparse-store fallback, Prompt 32 #4,
+    clearly labeled). Tier-2 produce (an apple can't anchor a dinner)
+    backfills only after every store's proteins + hero produce are exhausted.
+    Only after every saved store's whole pool is exhausted may an anchor
+    repeat — marked so the disclosure is forced."""
     if count <= 0:
         return []
     chosen: list[MarketCandidate] = []
@@ -513,6 +530,8 @@ def _select_market_anchors(
                 return
             if c.key in used or c.tier > max_tier:
                 continue
+            if any(_same_product(c, ch) for ch in chosen):
+                continue  # distinct products, not just distinct deal rows (P34)
             if fresh_only and c.key in exclude_keys:
                 continue
             used.add(c.key)
@@ -614,6 +633,208 @@ def _protein_block(floor: int) -> str:
         "on-sale proteins — or discard the concept. Carb-anchored dishes must be "
         "protein-fortified, never served as-is."
     )
+
+
+# --------------------------------------------------------------------------- #
+# Owned-perishable guarantee (Prompt 34 A)
+# --------------------------------------------------------------------------- #
+# Fresh non-staple proteins outside the meat/seafood categories that still
+# spoil (the scanner may file tofu under dairy/refrigerated).
+_FRESH_PROTEIN_NAMES = ("tofu", "tempeh", "seitan")
+# Shelf-stable markers: these never spoil, so they get no urgency slot.
+_SHELF_STABLE_MARKERS = ("canned", "jerky", "dried", "dehydrated", "cured",
+                         "shelf stable", "shelf-stable")
+
+
+def _owned_perishables(
+    pantry: list[PantryItem], household: int, today: date,
+    excluded_terms: list[str] | None = None,
+) -> list[PantryItem]:
+    """Active pantry items that WILL SPOIL and can anchor a dinner (P34 A1):
+    meat/seafood categories plus fresh non-staple proteins (tofu), with
+    sufficient quantity (the P23 parser via ``_anchor_sufficient``). Staples
+    and shelf-stable proteins (canned beans/tuna) are excluded — they don't
+    need urgency. use_soon items sort first, then by estimated expiry."""
+    excl = [t.lower() for t in (excluded_terms or [])]
+    out: list[PantryItem] = []
+    for it in pantry:
+        if it.is_staple:
+            continue
+        cat = (it.category or "").lower()
+        name = (it.name or "").lower()
+        is_fresh_protein = any(t in name for t in _FRESH_PROTEIN_NAMES)
+        if cat not in {"meat", "seafood"} and not is_fresh_protein:
+            continue
+        if cat == "canned" or any(m in name for m in _SHELF_STABLE_MARKERS):
+            continue
+        if excl and any(t in name for t in excl):
+            continue  # never force an allergen / excluded ingredient
+        if not _anchor_sufficient(it, household):
+            continue
+        out.append(it)
+    out.sort(key=lambda it: (
+        not _use_soon(it, today),
+        it.estimated_expiry or date.max,
+        it.name or "",
+    ))
+    return out
+
+
+def _perishable_block(item: PantryItem, use_soon: bool) -> str:
+    qty = " ".join(p for p in (item.quantity_estimate, item.unit) if p) or "some"
+    urgency = (
+        f' Its why_this_recipe must LEAD with the urgency (e.g. "Your '
+        f'{item.name} should be used in the next day or two.").'
+        if use_soon
+        else ""
+    )
+    flag = ", flagged USE SOON — it should be used in the next day or two"
+    return (
+        f"\n\nOWNED-PERISHABLE SLOT — the user already owns {item.name} "
+        f"(HAVE {qty}), which is perishable{flag if use_soon else ''}. "
+        f"Exactly ONE concept in this batch (NOT a market pick) must be "
+        f'ANCHORED on it: set its anchor_ingredient to "{item.name}". '
+        f"This slot is EXEMPT from the recently-shown anchor-variety rule — "
+        f"{item.name} may anchor again tonight even if it anchored recently — "
+        f"but the dish must still differ from recent {item.name} dishes in "
+        "format, cuisine, and ingredients (never the same dish again)."
+        + urgency
+    )
+
+
+def _anchor_is_item(anchor_name: str, item: PantryItem) -> bool:
+    """Does a concept's anchor refer to this pantry item? Ingredient-id match
+    first, else token containment / ≥0.5 overlap."""
+    if not anchor_name:
+        return False
+    a_key = _ing_key(anchor_name)
+    i_key = _ing_key(item.name or "")
+    if a_key is not None and a_key == i_key:
+        return True
+    ta = set(ingredient_matcher._tokens(anchor_name))
+    ti = set(ingredient_matcher._tokens(item.name or ""))
+    if not ta or not ti:
+        return False
+    overlap = len(ta & ti) / len(ta | ti)
+    return ta <= ti or ti <= ta or overlap >= 0.5
+
+
+_URGENCY_MARKERS = ("next day", "use soon", "should be used", "use it up",
+                    "before it turns", "won't keep")
+
+
+def _apply_urgency_line(concept: dict, item: PantryItem) -> None:
+    """use_soon escalation (P34 A4): the perishable slot's why_this_recipe
+    LEADS with urgency; prepend deterministically if the model didn't."""
+    w = (concept.get("why_this_recipe") or "").strip()
+    if any(m in w.lower() for m in _URGENCY_MARKERS):
+        return
+    line = f"Your {item.name} should be used in the next day or two."
+    concept["why_this_recipe"] = f"{line} {w}".strip()
+
+
+async def _enforce_perishable_slot(
+    client: AsyncAnthropic,
+    concepts: list[dict],
+    item: PantryItem,
+    cands: list[MarketCandidate],
+    pantry_iids: set[int],
+    base_system: list[dict] | str,
+    ctx_text: str,
+    use_soon: bool,
+) -> list[dict]:
+    """Deterministic backstop for the owned-perishable guarantee (P34 A2):
+    ≥1 non-market concept anchored on ``item``. If the model skipped it, one
+    targeted regeneration replaces a non-market concept; the use_soon urgency
+    line is applied to whichever concept holds the slot."""
+
+    def slot_indices() -> list[int]:
+        return [
+            i for i, c in enumerate(concepts)
+            if _anchor_is_item(c.get("anchor_ingredient") or "", item)
+            and _match_candidate(
+                c.get("anchor_ingredient") or "", cands, pantry_iids
+            ) is None
+        ]
+
+    idx = slot_indices()
+    if not idx:
+        non_market = [
+            i for i, c in enumerate(concepts)
+            if _match_candidate(
+                c.get("anchor_ingredient") or "", cands, pantry_iids
+            ) is None
+        ]
+        target = non_market[0] if non_market else 0
+        qty = " ".join(
+            p for p in (item.quantity_estimate, item.unit) if p
+        ) or "some"
+        tier = (concepts[target].get("difficulty") or "").strip() or "the same"
+        correction = (
+            f"\n\nOWNED-PERISHABLE SLOT MISSING: no concept is anchored on the "
+            f"user's {item.name} (HAVE {qty}), which is perishable"
+            + (" and flagged USE SOON" if use_soon else "")
+            + ". Return ONE replacement concept as JSON "
+            '{"recipes":[{...same shape...}]} ANCHORED on it: set '
+            f'anchor_ingredient exactly to "{item.name}" and market_pick '
+            f"false. Differ from recent {item.name} dishes in format and "
+            f"cuisine. Keep the SAME difficulty tier ('{tier}')."
+        )
+        prior = json.dumps(_concept_brief(concepts[target]), ensure_ascii=False)
+        msg = (
+            f"{ctx_text}{correction}\n\nConcept to replace:\n{prior}\n\n"
+            "Return the replacement now."
+        )
+        data = await _call_json(
+            client, model=settings.recipe_model, max_tokens=_CONCEPT_MAX_TOKENS,
+            system=base_system, user_msg=msg, category="generation",
+            stage="concept_fix",
+        )
+        recs = data.get("recipes") if isinstance(data, dict) else None
+        if isinstance(recs, list) and recs and isinstance(recs[0], dict):
+            concepts[target] = recs[0]
+        idx = slot_indices()
+        if idx:
+            logger.info("Perishable slot: regenerated concept %d onto %r",
+                        target, item.name)
+        else:
+            logger.warning(
+                "Perishable slot: guarantee for %r not satisfied after one "
+                "regeneration — shipping without it this batch.", item.name,
+            )
+    if idx and use_soon:
+        _apply_urgency_line(concepts[idx[0]], item)
+    return concepts
+
+
+def _feed_sort(
+    pairs: list[tuple[dict, dict]],
+    cands: list[MarketCandidate],
+    pantry_iids: set[int],
+) -> list[tuple[dict, dict]]:
+    """Feed order (P34 B5): within each difficulty tier, pantry-anchored
+    dishes lead ($0 buys first, then cheapest), market picks follow. Stable
+    within groups. Operates on (concept, critic) pairs so critic metadata
+    stays attached."""
+    tier_rank = {t: i for i, t in enumerate(_TIER_ORDER)}
+
+    def key(pair: tuple[dict, dict]):
+        c, _critic = pair
+        is_market = _match_candidate(
+            c.get("anchor_ingredient") or "", cands, pantry_iids
+        ) is not None
+        cost = _cost_from_ingredients([
+            k for k in (c.get("key_ingredients") or []) if isinstance(k, dict)
+        ])
+        return (
+            tier_rank.get((c.get("difficulty") or "").strip().lower(), 1),
+            is_market,
+            int(cost["unknown_priced_items"] > 0 or cost["known_buy_cost"] > 0),
+            float(cost["known_buy_cost"]),
+            cost["unknown_priced_items"],
+        )
+
+    return sorted(pairs, key=key)
 
 
 # --------------------------------------------------------------------------- #
@@ -849,9 +1070,9 @@ async def _regen_for_overlap(
         'concept as JSON {"recipes":[{...same shape...}]} that differs in '
         "protein treatment, seasoning family, or dish format — not just the "
         f"title. Keep the SAME difficulty tier ('{tier}'), and if this is a "
-        "MARKET PICK keep the SAME assigned anchor (the anchor never counts as "
-        "overlap). Use ONLY ingredients actually in their kitchen or on the "
-        "deals list."
+        "MARKET PICK or the OWNED-PERISHABLE slot, keep the SAME anchor — "
+        "change how it's treated, not what it is. Use ONLY ingredients "
+        "actually in their kitchen or on the deals list."
     )
     prior = json.dumps(_concept_brief(concept), ensure_ascii=False)
     msg = f"{ctx_text}{correction}\n\nConcept to replace:\n{prior}\n\nReturn the replacement now."
@@ -2012,6 +2233,28 @@ async def _enforce_slot_contract(
     return concepts
 
 
+def _shared_axes_with_exemption(
+    s: dict, o: dict, is_recent: bool, exempt_anchor_keys: set[str]
+) -> int:
+    """Axes shared between two signatures, honoring the owned-perishable
+    RECENCY EXEMPTION (P34 A3): vs RECENTLY SHOWN signatures, a shared anchor
+    that is an owned perishable doesn't count — beef can anchor daily until
+    eaten. Format/cuisine axes (and batchmate comparisons) still count fully,
+    so it's beef again but never the same beef dish again."""
+    shared = _axes_shared(s, o)
+    if not is_recent or not exempt_anchor_keys or shared == 0:
+        return shared
+    a, b = _norm_sig(s), _norm_sig(o)
+    anchors_match = bool(
+        a["anchor_ingredient"] and a["anchor_ingredient"] == b["anchor_ingredient"]
+    )
+    if anchors_match:
+        key = _ing_key(s.get("anchor_ingredient") or "")
+        if key is not None and key in exempt_anchor_keys:
+            return shared - 1
+    return shared
+
+
 async def _enforce_variety(
     client: AsyncAnthropic,
     concepts: list[dict],
@@ -2019,6 +2262,7 @@ async def _enforce_variety(
     base_system: str,
     ctx_text: str,
     market_pool_exhausted: bool = True,
+    exempt_anchor_keys: set[str] | None = None,
 ) -> list[dict]:
     """Regenerate (once) any concept whose signature repeats a recent one — or an
     earlier concept in this same batch — on 2+ of the 3 axes.
@@ -2026,13 +2270,29 @@ async def _enforce_variety(
     ``market_pool_exhausted``: whether the WIDENED market-anchor pool has no
     unused candidates left. The "pantry's too small" relaxation note may only
     fire when that pool was genuinely exhausted — never as cover for selector
-    starvation (Prompt 32 3d)."""
+    starvation (Prompt 32 3d).
+
+    ``exempt_anchor_keys``: owned-perishable anchor keys whose RECENT anchor
+    axis is exempt (P34 A3)."""
+    exempt = exempt_anchor_keys or set()
+
+    def collisions(sigs: list[dict]) -> list[int]:
+        out: list[int] = []
+        for i, s in enumerate(sigs):
+            recent_hit = any(
+                _shared_axes_with_exemption(s, o, True, exempt) >= 2
+                for o in recent_sigs
+            )
+            batch_hit = any(
+                _axes_shared(s, sigs[j]) >= 2
+                for j in range(len(sigs)) if j != i
+            )
+            if recent_hit or batch_hit:
+                out.append(i)
+        return out
+
     sigs = [_concept_sig(c) for c in concepts]
-    collide: list[int] = []
-    for i, s in enumerate(sigs):
-        others = recent_sigs + [sigs[j] for j in range(len(sigs)) if j != i]
-        if any(_axes_shared(s, o) >= 2 for o in others):
-            collide.append(i)
+    collide = collisions(sigs)
     if not collide:
         return concepts
     fixed = await asyncio.gather(
@@ -2049,10 +2309,10 @@ async def _enforce_variety(
     all_sigs = [_concept_sig(c) for c in concepts]
     _RELAX_MARKERS = ("another take", "too small", "reshapes", "same anchor",
                       "same shelf", "pantry can't", "pantry couldn't")
+    still = set(collisions(all_sigs))
     for i in collide:
         s = _norm_sig(all_sigs[i])
-        others = recent_sigs + [all_sigs[j] for j in range(len(concepts)) if j != i]
-        if any(_axes_shared(s, o) >= 2 for o in others):
+        if i in still:
             anchor = s.get("anchor_ingredient") or "a pantry staple"
             w = (concepts[i].get("why_this_recipe") or "").strip()
             if not any(m in w.lower() for m in _RELAX_MARKERS):
@@ -2151,6 +2411,7 @@ async def _enforce_market_diversity(
         if not unused:
             break
         jobs.append((i, unused.pop(0)))
+    still_dup: list[int] = []
     if jobs:
         fixed = await asyncio.gather(
             *(
@@ -2162,13 +2423,31 @@ async def _enforce_market_diversity(
         for (i, cand), res in zip(jobs, fixed):
             if isinstance(res, dict):
                 concepts[i] = res
+            # P34 C6 fix: VERIFY the regen actually re-anchored where it was
+            # told. The old code trusted the result and marked the assigned
+            # key used — a failed or stubborn regeneration shipped the
+            # duplicate silently. Re-match what actually came back.
+            got = _match_candidate(
+                concepts[i].get("anchor_ingredient") or "", cands, pantry_iids
+            )
+            if got is not None and got.key == cand.key:
                 used_keys.add(cand.key)
+            else:
+                still_dup.append(i)
+                logger.warning(
+                    "Market diversity: regen for concept %d did not adopt the "
+                    "assigned anchor %r (got %r) — demoting at persist.",
+                    i, cand.deal.product_name,
+                    concepts[i].get("anchor_ingredient"),
+                )
         logger.info(
             "Market diversity: re-anchored %d duplicate market pick(s): %s",
             len(jobs), [i for i, _ in jobs],
         )
     # Any duplicate left had NO unused candidate — the pool is genuinely
-    # exhausted; force the existing repeat disclosure.
+    # exhausted; force the existing repeat disclosure. (Verified-failed regens
+    # are NOT disclosed as intentional repeats — the persist-time gate demotes
+    # them from market picks instead.)
     for i in dup_idx[len(jobs):]:
         anchor = concepts[i].get("anchor_ingredient") or "tonight's deal"
         w = (concepts[i].get("why_this_recipe") or "").strip()
@@ -2330,6 +2609,18 @@ async def generate_concepts(
         market_slots = max(n - ask_count, 0)
     else:
         market_slots = _market_slot_count(n, len(census))
+
+    # Owned-perishable guarantee (P34 A2): while owned perishables exist with
+    # sufficient quantity, ≥1 slot is reserved for one — it outranks the
+    # market-pick reservation when they conflict (incl. at N=3).
+    perishables = _owned_perishables(
+        ctx.pantry, user.household_size or 2, date.today(),
+        excluded_terms=[*(user.allergies or []), *(user.excluded_ingredients or [])],
+    )
+    perishable = perishables[0] if perishables else None
+    perishable_use_soon = bool(perishable) and _use_soon(perishable, date.today())
+    if perishable is not None:
+        market_slots = min(market_slots, n - 1)
     recent_market = await _recent_market_anchors(db, user.id)
     pantry_norms = set(ctx.pantry_by_norm.keys())
     exclude_terms = requested_terms if enumerated else None
@@ -2405,11 +2696,15 @@ async def generate_concepts(
     )
     system_blocks = _cached_system(_CONCEPT_SYSTEM, concept_l2)
     market_block = _market_block(ctx.market_candidates, ctx.chain_name)
+    perishable_block = (
+        _perishable_block(perishable, perishable_use_soon) if perishable else ""
+    )
     user_msg = (
         f"THIS BATCH: propose exactly {n} concepts with difficulty mix: "
         f"{_tier_plan_text(n, tiers)}.\n"
         f"Avoid repeating these recent titles: {_fmt_list(list(recent_titles))}."
         + ctx.variety_block
+        + perishable_block
         + market_block
         + _direction_block(ctx.direction, enumerated)
         + ctx.pin_block
@@ -2422,10 +2717,12 @@ async def generate_concepts(
     logger.info(
         "Stage 1 prompt assembled [model=%s]: L1=%d chars, L2=%d chars, "
         "user=%d chars; blocks: taste_notes=%s loved_passed=%s recently_shown=%s "
-        "direction=%s pins=%s market_assignments=%s",
+        "direction=%s pins=%s market_assignments=%s perishable_slot=%s",
         settings.recipe_model, len(_CONCEPT_SYSTEM), len(concept_l2), len(user_msg),
         bool(ctx.taste_block), bool(ctx.history_block), bool(ctx.variety_block),
         bool(ctx.direction), bool(ctx.pin_block), bool(market_block),
+        f"{perishable.name}{' (use_soon)' if perishable_use_soon else ''}"
+        if perishable else "none",
     )
     if settings.log_prompts:
         logger.info(
@@ -2465,16 +2762,29 @@ async def generate_concepts(
             )
             # Variety guard: never re-serve a recent signature under a new name,
             # and keep the batch mutually distinct (each concept differs from
-            # EVERY other on 2+ axes). Runs even with no history.
+            # EVERY other on 2+ axes). Runs even with no history. Owned
+            # perishables are exempt on the RECENT anchor axis (P34 A3).
+            exempt_keys = {
+                k for k in (_ing_key(it.name or "") for it in perishables)
+                if k is not None
+            }
             raw = await _enforce_variety(
                 client, raw, recent_sigs, system_blocks, user_msg,
                 market_pool_exhausted=pool_exhausted,
+                exempt_anchor_keys=exempt_keys,
             )
             # Slot-contract CAP backstop (Prompt 30): deterministic, has the final
             # say — the critic is unreliable at counting caps across the batch.
             if enumerated:
                 raw = await _enforce_slot_contract(
                     client, raw, requested_terms, ask_count, system_blocks, user_msg
+                )
+            # Owned-perishable guarantee (P34 A2): ≥1 non-market concept
+            # anchored on the top perishable; use_soon leads with urgency.
+            if perishable is not None:
+                raw = await _enforce_perishable_slot(
+                    client, raw, perishable, ctx.market_candidates, pantry_iids,
+                    system_blocks, user_msg, perishable_use_soon,
                 )
             # Ingredient-overlap variety math (P33 B): deterministic Jaccard +
             # flavor-lead check vs batchmates, recent batches, and the saved
@@ -2483,8 +2793,9 @@ async def generate_concepts(
                 client, raw, ctx.overlap_pool, ctx.overlap_carveout,
                 system_blocks, user_msg,
             )
-            # Within-batch market anchor diversity (P32 B3): no two market picks
-            # on the same anchor while unused candidates remain.
+            # Within-batch market anchor diversity (P32 B3, hardened P34 C6):
+            # no two market picks on the same deal — and regen results are
+            # verified, not trusted.
             raw = await _enforce_market_diversity(
                 client, raw, ctx.market_candidates, pantry_iids,
                 system_blocks, user_msg,
@@ -2492,8 +2803,20 @@ async def generate_concepts(
             # Title diversity (P32 D9): no signature word in 3+ titles.
             raw = await _enforce_title_diversity(client, raw)
 
+    # Feed order (P34 B5): within each tier, pantry-anchored ($0/cheapest)
+    # first, market picks after — persisted in this order so /latest (ordered
+    # by id) serves the all-pantry dish as its tier's headline.
+    pairs = _feed_sort(list(zip(raw, critics)), ctx.market_candidates, pantry_iids)
+
+    # Persist-time distinctness gate (P34 C6): the final say on market anchors.
+    # Selection dedups products, enforcement verifies regens — and this gate
+    # guarantees no two persisted market picks share a deal OR product even if
+    # a stubborn regeneration slipped through. Exhaustion repeats stay allowed.
+    used_anchor_cands: list[MarketCandidate] = []
+    allowed_repeats = sum(1 for c in ctx.market_candidates if c.repeat)
+
     persisted: list[Recipe] = []
-    for r, critic in zip(raw, critics):
+    for r, critic in pairs:
         key_ings = [
             _reconcile_key(k, ctx.deal_by_ingredient, ctx.chain_name)
             for k in (r.get("key_ingredients") or [])
@@ -2504,6 +2827,23 @@ async def generate_concepts(
         # user doesn't own (source of truth: OUR deal cache, not the model flag).
         anchor_name = r.get("anchor_ingredient") or ""
         cand = _match_candidate(anchor_name, ctx.market_candidates, pantry_iids)
+        if cand is not None:
+            duplicate = any(
+                cand.key == u.key or _same_product(cand, u)
+                for u in used_anchor_cands
+            )
+            if duplicate:
+                if allowed_repeats > 0:
+                    allowed_repeats -= 1  # disclosed exhaustion repeat (P32)
+                else:
+                    logger.warning(
+                        "Persist gate: demoting %r — its anchor %r duplicates "
+                        "another market pick in this batch.",
+                        r.get("title"), cand.deal.product_name,
+                    )
+                    cand = None
+            if cand is not None:
+                used_anchor_cands.append(cand)
         market_anchor = None
         if cand is not None:
             deal = cand.deal

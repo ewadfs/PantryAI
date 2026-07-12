@@ -70,12 +70,13 @@ PROFILE = dict(
     recipes_per_generation=5,
 )
 
-# ~80 pantry items. Exactly ONE viable dinner anchor (chicken thighs, 1.5 lb):
-# census=1 -> 4 of the 5 slots become market picks. No eggs; other proteins are
-# below anchor quantity or canned (non-protein category).
+# ~80 pantry items. Exactly ONE viable dinner anchor — ground beef, 1 lb —
+# which is also the OWNED PERISHABLE (P34):
+# census=1 -> 4 of the 5 slots become market picks. Bacon is below anchor
+# quantity and canned tuna is shelf-stable, so neither gets the guarantee.
 PANTRY: list[tuple[str, str, str | None, str | None, bool]] = [
     # (name, category, quantity, unit, is_staple)
-    ("chicken thighs", "meat", "1.5", "lb", False),
+    ("ground beef", "meat", "1", "lb", False),
     ("bacon", "meat", "4", "oz", False),
     ("canned tuna", "canned", "1", "can", True),
     ("broccoli", "produce", "1", "head", False),
@@ -178,7 +179,7 @@ SNS_DEALS = [
     ("Fresh Atlantic Salmon Fillets", None, "7.99", "12.99", "lb", "seafood"),
     ("Boneless Pork Loin Chops Value Pack", None, "2.49", "3.99", "lb", "meat"),
     ("Ground Turkey 93% Lean", "Nature's Promise", "3.99", None, "lb", "meat"),
-    ("USDA Choice Boneless New York Strip Steak Value Pack", None, "6.99", None, "lb", "meat"),
+    ("USDA Choice Boneless New York Strip Steak Value Pack", None, "6.99", "12.99", "lb", "meat"),
     ("Perdue Boneless Skinless Chicken Thighs Family Pack", "Perdue", "2.29", "3.49", "lb", "meat"),
     ("Cauliflower", None, "2.79", None, "each", "produce"),
     ("Sweet Potatoes", None, "0.89", "1.29", "lb", "produce"),
@@ -190,15 +191,21 @@ SNS_DEALS = [
 # three 'Charred Cauliflower' dishes. Feeds RECENTLY SHOWN + rotation + the
 # P33 ingredient-overlap pool (full ingredient lists included).
 PRIOR_BATCH = [
-    ("Charred Cauliflower Power Bowl", "bowl", "mediterranean",
+    ("Charred Cauliflower Power Bowl", "cauliflower", "bowl", "mediterranean",
      ["cauliflower", "white rice", "canned chickpeas", "greek yogurt",
       "red onion", "cucumber", "cherry tomatoes", "tahini", "olive oil"]),
-    ("Charred Cauliflower Shawarma Wraps", "wrap", "middle-eastern",
+    ("Charred Cauliflower Shawarma Wraps", "cauliflower", "wrap",
+     "middle-eastern",
      ["cauliflower", "flour tortillas", "greek yogurt", "romaine lettuce",
       "red onion", "cucumber", "tahini"]),
-    ("Charred Cauliflower Curry", "curry", "indian",
+    ("Charred Cauliflower Curry", "cauliflower", "curry", "indian",
      ["cauliflower", "coconut milk", "canned chickpeas", "yellow onion",
       "ginger", "white rice", "cilantro"]),
+    # Recent BEEF dish sharing anchor+cuisine with tonight's beef tacos: the
+    # P34 recency exemption must let beef anchor again (different dish).
+    ("Charred Beef Fajita Bowls", "ground beef", "bowl", "mexican",
+     ["ground beef", "white rice", "red bell pepper", "yellow onion",
+      "lime", "salsa"]),
 ]
 LOVED = ("Skillet Chicken Fajitas", "skillet", "mexican", 1)
 PASSED = ("Quinoa Stuffed Peppers", "bake", "american", -1)
@@ -288,6 +295,8 @@ class _StubMessages:
             return _msg(self._detail(user, sys_text))
         if "INGREDIENT OVERLAP VIOLATION" in user:
             return _msg({"recipes": [self._overlap_regen(user)]})
+        if "VARIETY VIOLATION" in user:
+            return _msg({"recipes": [self._variety_regen(user)]})
         if "MARKET ANCHOR COLLISION" in user:
             return _msg({"recipes": [self._market_concept_from_correction(user)]})
         if "Propose tonight's" in user:
@@ -315,6 +324,8 @@ class _StubMessages:
             return "red bell pepper"
         if "cauliflower" in a:
             return "greek yogurt"
+        if "steak" in a or "strip" in a:
+            return "green beans"
         return "broccoli"
 
     # -- Stage 1 ---------------------------------------------------------- #
@@ -338,9 +349,26 @@ class _StubMessages:
                                 "sale_price": None}]
             return keys
 
-        recipes = [self._pantry_concept(tiers[0])]
-        recipes[0]["key_ingredients"] = with_pin(recipes[0]["key_ingredients"])
-        for k, (name, price, unit, at_tail) in enumerate(picks[: n - 1]):
+        # Pantry concepts fill only the NON-market slots; the perishable slot
+        # honors the OWNED-PERISHABLE block. Deliberately appended LAST so the
+        # engine's feed sort (P34 B5) has to move the $0 dish to the front.
+        per = re.search(
+            r"OWNED-PERISHABLE SLOT — the user already owns (.+?) \(HAVE", user
+        )
+        per_name = per.group(1).strip() if per else None
+        per_use_soon = "flagged USE SOON" in user
+        pantry_needed = max(n - len(picks[:n]), 0)
+        pantry_concepts = []
+        for j in range(pantry_needed):
+            if per_name and j == 0:
+                c = self._perishable_concept(per_name, per_use_soon, tiers[0])
+            else:
+                c = self._fallback_pantry_concept(tiers[0])
+            c["key_ingredients"] = with_pin(c["key_ingredients"])
+            pantry_concepts.append(c)
+
+        recipes = []
+        for k, (name, price, unit, at_tail) in enumerate(picks[: n - len(pantry_concepts)]):
             clean = ingredient_matcher.normalize_flyer_name(name) or name
             store_note = at_tail.replace(" — at ", " at ").strip()
             fmt = _FORMATS[k % len(_FORMATS)]
@@ -379,12 +407,27 @@ class _StubMessages:
                      "in_pantry": True, "on_sale": False, "sale_price": None},
                 ]),
             })
+        recipes += pantry_concepts
         return {"recipes": recipes[:n]}
+
+    def _variety_regen(self, user: str) -> dict:
+        """Keep the anchor, change format + cuisine — like the live model."""
+        m = re.search(r"Concept that repeats:\n(\{.*\})\n\nReturn", user, re.S)
+        brief = json.loads(m.group(1)) if m else {}
+        c = self._overlap_regen(user)  # same reconstruction shape
+        c["title"] = f"{(brief.get('anchor_ingredient') or 'Dinner').title()} Casserole Night"
+        c["dish_format"] = "casserole"
+        c["cuisine"] = "spanish"
+        c["flavor_lead"] = brief.get("flavor_lead") or ["smoked paprika rub"]
+        c["why_this_recipe"] = "Reworked format for variety."
+        return c
 
     def _overlap_regen(self, user: str) -> dict:
         """P33 regen: same dish, new seasoning direction (the correction asks
         for a different seasoning family; anchor stays)."""
-        m = re.search(r"Concept to replace:\n(\{.*\})\n\nReturn", user, re.S)
+        m = re.search(
+            r"Concept (?:to replace|that repeats):\n(\{.*\})\n\nReturn", user, re.S
+        )
         brief = json.loads(m.group(1)) if m else {}
         keys = [
             {"generic_name": str(k), "brand": None, "in_pantry": True,
@@ -411,29 +454,87 @@ class _StubMessages:
         }
 
     def _pantry_concept(self, tier: str) -> dict:
+        return self._perishable_concept("ground beef", False, tier)
+
+    def _perishable_concept(self, name: str, use_soon: bool, tier: str) -> dict:
+        if use_soon:
+            # Different dish from the recent taco batch — and NO urgency line,
+            # so the engine's deterministic prepend (P34 A4) is exercised.
+            return {
+                "title": "Seared Beef & Green Beans Stir-Fry",
+                "description": "Hot wok beef, snappy green beans, garlic rice.",
+                "difficulty": tier,
+                "prep_time_min": 10, "cook_time_min": 15, "total_time_min": 25,
+                "servings": 2,
+                "why_this_recipe": "A fast wok dinner from your kitchen.",
+                "cuisine": "asian",
+                "dish_format": "stir-fry",
+                "anchor_ingredient": name,
+                "flavor_lead": ["ginger-garlic"],
+                "market_pick": False,
+                "tags": ["pantry-first"],
+                "nutrition_per_serving": {"calories": 640, "protein_g": 58},
+                "key_ingredients": [
+                    {"generic_name": name, "brand": None,
+                     "in_pantry": True, "on_sale": False, "sale_price": None},
+                    {"generic_name": "green beans", "brand": None,
+                     "in_pantry": False, "on_sale": False, "sale_price": None},
+                    {"generic_name": "white rice", "brand": None,
+                     "in_pantry": True, "on_sale": False, "sale_price": None},
+                    {"generic_name": "soy sauce", "brand": None,
+                     "in_pantry": True, "on_sale": False, "sale_price": None},
+                ],
+            }
         # The 1104-cal taco fixture: claims heavy at concept stage already.
         return {
-            "title": "Charred Chicken Thigh Tacos",
-            "description": "Hard-seared thighs, toasted tortillas, lime crema.",
+            "title": "Smoky Beef Street Tacos",
+            "description": "Hard-seared beef, toasted tortillas, lime crema.",
             "difficulty": tier,
             "prep_time_min": 15, "cook_time_min": 20, "total_time_min": 35,
             "servings": 2,
-            "why_this_recipe": "Uses the chicken thighs already in your kitchen.",
+            "why_this_recipe": "Uses the ground beef already in your kitchen.",
             "cuisine": "mexican",
             "dish_format": "tacos",
-            "anchor_ingredient": "chicken thighs",
+            "anchor_ingredient": name,
             "flavor_lead": ["carne asada seasoning"],
             "market_pick": False,
             "tags": ["pantry-first"],
             "nutrition_per_serving": {"calories": 1104, "protein_g": 62},
             "key_ingredients": [
-                {"generic_name": "chicken thighs", "brand": None,
+                {"generic_name": name, "brand": None,
                  "in_pantry": True, "on_sale": False, "sale_price": None},
                 {"generic_name": "flour tortillas", "brand": None,
                  "in_pantry": True, "on_sale": False, "sale_price": None},
                 {"generic_name": "cheddar cheese", "brand": None,
                  "in_pantry": True, "on_sale": False, "sale_price": None},
                 {"generic_name": "sour cream", "brand": None,
+                 "in_pantry": True, "on_sale": False, "sale_price": None},
+            ],
+        }
+
+    def _fallback_pantry_concept(self, tier: str) -> dict:
+        return {
+            "title": "Cheesy Rigatoni Marinara",
+            "description": "Baked rigatoni, marinara, two cheeses.",
+            "difficulty": tier,
+            "prep_time_min": 10, "cook_time_min": 30, "total_time_min": 40,
+            "servings": 2,
+            "why_this_recipe": "All from the pantry shelf.",
+            "cuisine": "italian",
+            "dish_format": "pasta",
+            "anchor_ingredient": "rigatoni",
+            "flavor_lead": ["garlic-oregano marinara"],
+            "market_pick": False,
+            "tags": ["pantry-first"],
+            "nutrition_per_serving": {"calories": 620, "protein_g": 55},
+            "key_ingredients": [
+                {"generic_name": "rigatoni", "brand": None,
+                 "in_pantry": True, "on_sale": False, "sale_price": None},
+                {"generic_name": "canned diced tomatoes", "brand": None,
+                 "in_pantry": True, "on_sale": False, "sale_price": None},
+                {"generic_name": "mozzarella", "brand": None,
+                 "in_pantry": True, "on_sale": False, "sale_price": None},
+                {"generic_name": "parmesan cheese", "brand": None,
                  "in_pantry": True, "on_sale": False, "sale_price": None},
             ],
         }
@@ -485,6 +586,8 @@ class _StubMessages:
 
         if "tortilla" in keys:
             out = self._taco_detail(trimmed=wants_rebalance)
+        elif "green beans" in keys and "beef" in keys:
+            out = self._stirfry_detail()
         elif "cauliflower" in keys:
             out = self._cauliflower_detail(fortified=wants_protein)
         else:
@@ -509,7 +612,7 @@ class _StubMessages:
 
     def _taco_detail(self, trimmed: bool) -> dict:
         ings = [
-            self._ing("chicken thighs", "1.5", "lb", in_pantry=True),
+            self._ing("ground beef", "1", "lb", in_pantry=True),
             self._ing("flour tortillas", "6", "each", in_pantry=True),
             self._ing("cheddar cheese", "4", "oz", in_pantry=True),
             self._ing("sour cream", "1", "cup", in_pantry=True),
@@ -523,13 +626,31 @@ class _StubMessages:
         return {
             "ingredients": ings,
             "instructions": [
-                "Pat thighs dry, season with chili powder and smoked paprika.",
-                "Sear hard in oil, 5-6 min per side, until deeply charred; rest.",
-                "Char tortillas over the flame; slice chicken.",
+                "Season the beef with chili powder and smoked paprika.",
+                "Sear hard in oil without stirring for a deep crust; break up.",
+                "Char tortillas over the flame.",
                 "Assemble with cheddar and lime crema.",
             ],
             "nutrition_per_serving": {"calories": 1104, "protein_g": 62,
                                       "carbs_g": 48, "fat_g": 70, "fiber_g": 4},
+        }
+
+    def _stirfry_detail(self) -> dict:
+        return {
+            "ingredients": [
+                self._ing("ground beef", "1", "lb", in_pantry=True),
+                self._ing("green beans", "12", "oz", in_pantry=False),
+                self._ing("white rice", "1", "cup", in_pantry=True),
+                self._ing("soy sauce", "2", "tbsp", in_pantry=True),
+                self._ing("olive oil", "1", "tbsp", in_pantry=True),
+            ],
+            "instructions": [
+                "Get the wok ripping hot; sear the beef in a thin layer.",
+                "Blister the green beans; add garlic and ginger late.",
+                "Toss with soy and serve over rice.",
+            ],
+            "nutrition_per_serving": {"calories": 940, "protein_g": 56,
+                                      "carbs_g": 78, "fat_g": 34, "fiber_g": 6},
         }
 
     def _cauliflower_detail(self, fortified: bool) -> dict:
@@ -573,7 +694,7 @@ class _StubMessages:
         elif "turkey" in a:
             protein = self._ing("ground turkey", "1.25", "lb", on_sale=True, price="3.99")
         elif "thigh" in a:
-            protein = self._ing("chicken thighs", "1.5", "lb", in_pantry=True)
+            protein = self._ing("chicken thighs", "1.5", "lb", on_sale=True, price="2.29")
         else:  # e.g. the unmatched New York strip: est-fallback path
             protein = self._ing(a, "1.5", "lb", on_sale=True, price="6.99")
         side = (
@@ -585,6 +706,7 @@ class _StubMessages:
             "spinach": self._ing("spinach", "5", "oz", in_pantry=True),
             "red bell pepper": self._ing("red bell pepper", "2", "each", in_pantry=True),
             "zucchini": self._ing("zucchini", "2", "each", in_pantry=True),
+            "green beans": self._ing("green beans", "12", "oz", in_pantry=False),
         }
         veg = veg_by_name.get(
             self._veg_for(a), self._ing("broccoli", "1", "lb", in_pantry=True)
@@ -717,21 +839,26 @@ async def seed_fixture(db, default_slug: str) -> User:
     # Full ingredient lists feed the P33 ingredient-overlap pool.
     prior_at = dt.now(timezone.utc) - timedelta(hours=2)
     cauliflower_iid, _c = ingredient_matcher.match_ingredient("cauliflower")
-    for title, fmt, cuisine, ings in PRIOR_BATCH:
+    for title, anchor, fmt, cuisine, ings in PRIOR_BATCH:
+        is_cauli = anchor == "cauliflower"
         db.add(Recipe(
             user_id=user.id, status="ready", title=title, cuisine=cuisine,
             difficulty="medium", servings=2, generated_at=prior_at,
-            why_this_recipe="Cauliflower is on sale this week.",
+            why_this_recipe=(
+                "Cauliflower is on sale this week." if is_cauli
+                else "Used up the ground beef."
+            ),
             ingredients_json=[
                 {"name": n, "generic_name": n, "in_pantry": True} for n in ings
             ],
-            signature_json={"anchor_ingredient": "cauliflower",
+            signature_json={"anchor_ingredient": anchor,
                             "dish_format": fmt, "cuisine": cuisine},
-            is_market_pick=True,
+            is_market_pick=is_cauli,
             # Legacy (pre-P32) anchor shape — exercises the rotation fallback.
-            market_anchor_json={"name": "cauliflower",
-                                "ingredient_id": cauliflower_iid,
-                                "sale_price": "2.49", "store": "Lidl"},
+            market_anchor_json=(
+                {"name": "cauliflower", "ingredient_id": cauliflower_iid,
+                 "sale_price": "2.49", "store": "Lidl"} if is_cauli else None
+            ),
         ))
     old_at = dt.now(timezone.utc) - timedelta(days=4)
     for title, fmt, cuisine, rating in (LOVED, PASSED):
@@ -951,6 +1078,48 @@ async def run_store(default_slug: str, stub: bool) -> None:
               f"(pins are carved out of every Jaccard set)")
         print(f"overlap violations shipped unannotated: {undisclosed}")
 
+        # -- P34: owned-perishable slot + recency exemption + feed order ---- #
+        beef_idx = [
+            i for i, r in enumerate(rows)
+            if "beef" in str((r.signature_json or {}).get("anchor_ingredient") or "")
+            and not r.is_market_pick
+        ]
+        if beef_idx:
+            k = beef_idx[0]
+            print(f"owned-perishable slot: #{k + 1} {rows[k].title} "
+                  f"(anchored on the owned ground beef; market pick: NO)")
+            prior_beef = next(
+                (e for e in pool if "Fajita" in e.title), None
+            )
+            if prior_beef is not None:
+                sig = rows[k].signature_json or {}
+                shared = recipe_engine._axes_shared(sig, {
+                    "anchor_ingredient": "ground beef",
+                    "dish_format": "bowl", "cuisine": "mexican",
+                })
+                j_beef = recipe_engine._jaccard(
+                    batch_entries[k].keys, prior_beef.keys
+                )
+                print(
+                    f"recency exemption: vs recent '{prior_beef.title}' — "
+                    f"{shared} signature axes shared incl. the beef anchor; "
+                    f"exempt on the anchor axis (owned perishable) -> effective "
+                    f"{max(shared - 1, 0)}, below the 2-axis suppression. "
+                    f"Ingredient J vs it = {j_beef:.2f} (beef itself is a "
+                    f"planned shared purchase for the saved ragu, so it's "
+                    f"carved out — dishes must differ beyond the beef)."
+                )
+        else:
+            print("owned-perishable slot: MISSING (expected a beef-anchored "
+                  "non-market dish!)")
+        first_cost = rows[0].key_ingredients_json or []
+        first_all_pantry = all(
+            k.get("in_pantry") is True for k in first_cost if isinstance(k, dict)
+        )
+        print(f"feed order: tier-leading dish is the all-pantry $0 dish "
+              f"(stub emitted it LAST; the sort promoted it): "
+              f"{'YES' if first_all_pantry and beef_idx == [0] else 'NO'}")
+
 
 async def clone_check() -> None:
     """P33 verify-1: feed the two live cauliflower-bowl clones through the
@@ -982,6 +1151,81 @@ async def clone_check() -> None:
                          if rules else "legal (unexpected!)"))
 
 
+async def mini_checks() -> None:
+    """P34 verify-2/3: (a) a use_soon perishable gets the guarantee at N=3
+    with the urgency why-line; (b) once the beef is consumed, the next batch
+    has no forced beef slot. Concept-stage only; reuses the Lidl fixture user
+    (whom the main run just seeded)."""
+    print("=" * 76)
+    print("MINI-CHECKS (P34 verify-2/3) — use_soon at N=3, then beef consumed")
+    print("=" * 76)
+    async with AsyncSessionLocal() as db:
+        user = (
+            await db.execute(
+                select(User).where(
+                    User.supabase_user_id == "golden-fixture-lidl"
+                )
+            )
+        ).scalar_one()
+        beef = (
+            await db.execute(
+                select(PantryItem).where(
+                    PantryItem.user_id == user.id,
+                    PantryItem.name == "ground beef",
+                )
+            )
+        ).scalar_one()
+
+        # (a) use_soon + N=3
+        beef.freshness = "use_soon"
+        user.recipes_per_generation = 3
+        await db.flush()
+        concepts = await recipe_engine.generate_concepts(db, user)
+        await db.commit()
+        slot = [
+            r for r in concepts
+            if "beef" in str((r.signature_json or {}).get("anchor_ingredient") or "")
+            and not r.is_market_pick
+        ]
+        markets = sum(1 for r in concepts if r.is_market_pick)
+        print(f"use_soon @ N=3: batch = {len(concepts)} concepts "
+              f"({markets} market picks); beef-anchored non-market: {len(slot)}")
+        if slot:
+            why = (slot[0].why_this_recipe or "")
+            leads_urgency = why.lower().startswith("your ground beef should be used")
+            print(f"  #{concepts.index(slot[0]) + 1} {slot[0].title}")
+            print(f"  why leads with urgency: {'YES' if leads_urgency else 'NO'} "
+                  f"-> \"{why[:90]}\"")
+
+        # (b) beef consumed -> no forced slot
+        beef.is_active = False
+        user.recipes_per_generation = 5
+        await db.flush()
+        concepts = await recipe_engine.generate_concepts(db, user)
+        await db.commit()
+        beef_forced = sum(
+            1 for r in concepts
+            if "beef" in str((r.signature_json or {}).get("anchor_ingredient") or "")
+            and not r.is_market_pick
+        )
+        beef_market = sum(
+            1 for r in concepts
+            if "beef" in str((r.signature_json or {}).get("anchor_ingredient") or "")
+            and r.is_market_pick
+        )
+        markets = sum(1 for r in concepts if r.is_market_pick)
+        print(f"beef consumed @ N=5: batch = {len(concepts)} concepts "
+              f"({markets} market picks); FORCED beef slot: {beef_forced} "
+              f"(guarantee inactive — nothing perishable left to protect). "
+              f"Beef market picks: {beef_market} — the flyer's beef deal is "
+              f"fair game again once the owned beef is gone.")
+
+        # restore fixture state for repeatable reruns
+        beef.is_active = True
+        beef.freshness = "good"
+        await db.commit()
+
+
 async def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--store", choices=["lidl", "stop_and_shop"], default=None)
@@ -1010,6 +1254,9 @@ async def main() -> None:
         print()
         for slug in slugs:
             await run_store(slug, use_stub)
+            print()
+        if "lidl" in slugs:
+            await mini_checks()
             print()
 
     if args.save_reference:

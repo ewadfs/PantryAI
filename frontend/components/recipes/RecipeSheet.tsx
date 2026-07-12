@@ -5,6 +5,7 @@ import { getRecipe } from "@/lib/recipeApi";
 import { comparePricesForRecipe, type PriceCompareResponse } from "@/lib/pricesApi";
 import type { Recipe } from "@/lib/recipeTypes";
 import {
+  AllPantryBadge,
   DifficultyPill,
   MarketPickBadge,
   QualityChips,
@@ -207,6 +208,7 @@ export default function RecipeSheet({
           <div className="flex flex-wrap items-center gap-2">
             <DifficultyPill difficulty={data.difficulty} />
             {data.is_market_pick && <MarketPickBadge />}
+            <AllPantryBadge recipe={data} />
             <QualityChips recipe={data} />
           </div>
           <h2 className="mt-2 text-2xl font-bold text-ink">{data.title}</h2>

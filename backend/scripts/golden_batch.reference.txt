@@ -14,12 +14,12 @@ per-stage models: concept_fix=claude-sonnet-4-6  concepts=claude-sonnet-4-6  cri
 stage-1 prompt blocks: taste_notes=✓  LOVED/PASSED=✓  RECENTLY SHOWN=✓  direction=✓  pins=✓  market assignments=✓
 title-word check (>2 repeats): CLEAN
 
-#1 [easy] Charred Chicken Thigh Tacos
-    signature: anchor='chicken thighs' · format=tacos · cuisine=mexican
+#1 [easy] Smoky Beef Street Tacos
+    signature: anchor='ground beef' · format=tacos · cuisine=mexican
     flavor lead: carne asada seasoning
-    macros: 1134 cal / 79 g protein (calculated, cov 1.00)
+    macros: 1224 cal / 56 g protein (calculated, cov 1.00)
     critic: score=8 verdict=ship
-    flags:  ⚠ heavy: 1134 cal
+    flags:  ⚠ heavy: 1224 cal
 
 #2 [easy] Charred Chicken Breast Skillet
     signature: anchor='chicken breast' · format=skillet · cuisine=italian
@@ -29,23 +29,23 @@ title-word check (>2 repeats): CLEAN
     critic: score=8 verdict=ship
     flags:  —
 
-#3 [medium] Ground Beef Weeknight Supper
-    signature: anchor='ground beef' · format=burgers · cuisine=american
-    flavor lead: smoked paprika rub
-    market pick: built around ground beef, $3.49/lb
-    macros: 938 cal / 58 g protein (calculated, cov 1.00)
+#3 [medium] New York Strip Steak Weeknight Supper
+    signature: anchor='new york strip steak' · format=roast · cuisine=tex-mex
+    flavor lead: ginger & scallion
+    market pick: built around new york strip steak, $6.99/lb — at Stop & Shop
+    macros: 760 cal / 58 g protein (est)
     critic: score=8 verdict=ship
     flags:  —
 
 #4 [medium] Golden Cauliflower with Crispy Cutlets
-    signature: anchor='cauliflower' · format=roast · cuisine=tex-mex
-    flavor lead: ginger & scallion
+    signature: anchor='cauliflower' · format=burgers · cuisine=american
+    flavor lead: smoked paprika rub
     market pick: built around cauliflower, $2.49/each
     macros: 690 cal / 45 g protein (calculated, cov 1.00)
     critic: score=8 verdict=ship
     flags:  ⚠ 45g protein — below your 54g target
 
-#5 [hard] Atlantic Salmon Fillets Harvest Plate
+#5 [hard] Atlantic Salmon Fillets Family Feast
     signature: anchor='atlantic salmon fillets' · format=sheet-pan · cuisine=asian
     flavor lead: lemon-dill
     market pick: built around atlantic salmon fillets, $7.99/lb — at Stop & Shop
@@ -56,24 +56,28 @@ title-word check (>2 repeats): CLEAN
 market anchors distinct: YES
 
 pairwise Jaccard (non-staple sets, carve-outs removed):
-  B1: Charred Chicken Thigh Tacos (batch)
+  B1: Smoky Beef Street Tacos (batch)
   B2: Charred Chicken Breast Skillet (batch)
-  B3: Ground Beef Weeknight Supper (batch)
+  B3: New York Strip Steak Weeknight Supper (batch)
   B4: Golden Cauliflower with Crispy Cutlets (batch)
-  B5: Atlantic Salmon Fillets Harvest Plate (batch)
+  B5: Atlantic Salmon Fillets Family Feast (batch)
   P1: Charred Cauliflower Shawarma Wraps (recent)
   P2: Charred Cauliflower Curry (recent)
-  P3: Charred Cauliflower Power Bowl (recent)
-  P4: Weeknight Beef Ragu Rigatoni (saved this week)
-        B1    B2    B3    B4    B5    P1    P2    P3    P4
-  B1     —  0.00  0.00  0.00  0.00  0.12  0.00  0.00  0.00
-  B2  0.00     —  0.00  0.00  0.00  0.00  0.00  0.00  0.00
-  B3  0.00  0.00     —  0.00  0.00  0.00  0.00  0.00  0.00
-  B4  0.00  0.00  0.00     —  0.00  0.20  0.00  0.33  0.00
-  B5  0.00  0.00  0.00  0.00     —  0.00  0.00  0.00  0.00
+  P3: Charred Beef Fajita Bowls (recent)
+  P4: Charred Cauliflower Power Bowl (recent)
+  P5: Weeknight Beef Ragu Rigatoni (saved this week)
+        B1    B2    B3    B4    B5    P1    P2    P3    P4    P5
+  B1     —  0.00  0.00  0.00  0.00  0.14  0.00  0.00  0.00  0.00
+  B2  0.00     —  0.00  0.00  0.00  0.00  0.00  0.00  0.00  0.00
+  B3  0.00  0.00     —  0.00  0.00  0.00  0.00  0.00  0.00  0.00
+  B4  0.00  0.00  0.00     —  0.00  0.20  0.00  0.00  0.33  0.00
+  B5  0.00  0.00  0.00  0.00     —  0.00  0.00  0.00  0.00  0.00
   max pairwise J = 0.33 (violation thresholds: >0.6 any, >0.45 same-anchor)
 carve-out proof: pin 'cherry tomatoes' in all 5 recipes = YES; overlap guard tripped by pin: NO (pins are carved out of every Jaccard set)
 overlap violations shipped unannotated: 0
+owned-perishable slot: #1 Smoky Beef Street Tacos (anchored on the owned ground beef; market pick: NO)
+recency exemption: vs recent 'Charred Beef Fajita Bowls' — 2 signature axes shared incl. the beef anchor; exempt on the anchor axis (owned perishable) -> effective 1, below the 2-axis suppression. Ingredient J vs it = 0.00 (beef itself is a planned shared purchase for the saved ragu, so it's carved out — dishes must differ beyond the beef).
+feed order: tier-leading dish is the all-pantry $0 dish (stub emitted it LAST; the sort promoted it): YES
 
 ============================================================================
 GOLDEN BATCH — default store: Stop & Shop — Golden Fixture  (N=5, floor 54 g, calorie band 1100)
@@ -83,64 +87,76 @@ per-stage models: concept_fix=claude-sonnet-4-6  concepts=claude-sonnet-4-6  cri
 stage-1 prompt blocks: taste_notes=✓  LOVED/PASSED=✓  RECENTLY SHOWN=✓  direction=✓  pins=✓  market assignments=✓
 title-word check (>2 repeats): CLEAN
 
-#1 [easy] Charred Chicken Thigh Tacos
-    signature: anchor='chicken thighs' · format=tacos · cuisine=mexican
+#1 [easy] Smoky Beef Street Tacos
+    signature: anchor='ground beef' · format=tacos · cuisine=mexican
     flavor lead: carne asada seasoning
-    macros: 1134 cal / 79 g protein (calculated, cov 1.00)
+    macros: 1224 cal / 56 g protein (calculated, cov 1.00)
     critic: score=8 verdict=ship
-    flags:  ⚠ heavy: 1134 cal
+    flags:  ⚠ heavy: 1224 cal
 
-#2 [easy] Charred Atlantic Salmon Fillets Skillet
-    signature: anchor='atlantic salmon fillets' · format=skillet · cuisine=italian
+#2 [easy] Charred New York Strip Steak Skillet
+    signature: anchor='new york strip steak' · format=skillet · cuisine=italian
+    flavor lead: smoked paprika rub
+    market pick: built around new york strip steak, $6.99/lb
+    macros: 760 cal / 58 g protein (est)
+    critic: score=8 verdict=ship
+    flags:  —
+
+#3 [medium] Pork Loin Chops Weeknight Supper
+    signature: anchor='pork loin chops' · format=roast · cuisine=tex-mex
+    flavor lead: ginger & scallion
+    market pick: built around pork loin chops, $2.49/lb
+    macros: 1004 cal / 68 g protein (calculated, cov 1.00)
+    critic: score=8 verdict=ship
+    flags:  —
+
+#4 [medium] Charred Atlantic Salmon Fillets Burgers
+    signature: anchor='atlantic salmon fillets' · format=burgers · cuisine=american
     flavor lead: smoked paprika rub
     market pick: built around atlantic salmon fillets, $7.99/lb
     macros: 1016 cal / 66 g protein (calculated, cov 1.00)
     critic: score=8 verdict=ship
     flags:  —
 
-#3 [medium] Pork Loin Chops Weeknight Supper
-    signature: anchor='pork loin chops' · format=burgers · cuisine=american
-    flavor lead: smoked paprika rub
-    market pick: built around pork loin chops, $2.49/lb
-    macros: 1004 cal / 68 g protein (calculated, cov 1.00)
-    critic: score=8 verdict=ship
-    flags:  —
-
-#4 [medium] Ground Turkey Family Feast
-    signature: anchor='ground turkey' · format=roast · cuisine=tex-mex
-    flavor lead: ginger & scallion
-    market pick: built around ground turkey, $3.99/lb
-    macros: 928 cal / 59 g protein (calculated, cov 1.00)
-    critic: score=8 verdict=ship
-    flags:  —
-
-#5 [hard] New York Strip Steak Harvest Plate
-    signature: anchor='new york strip steak' · format=sheet-pan · cuisine=asian
+#5 [hard] Chicken Thighs Family Feast
+    signature: anchor='chicken thighs' · format=sheet-pan · cuisine=asian
     flavor lead: lemon-dill
-    market pick: built around new york strip steak, $6.99/lb
-    macros: 760 cal / 58 g protein (est)
+    market pick: built around chicken thighs, $2.29/lb
+    macros: 973 cal / 75 g protein (calculated, cov 1.00)
     critic: score=8 verdict=ship
     flags:  —
 
 market anchors distinct: YES
 
 pairwise Jaccard (non-staple sets, carve-outs removed):
-  B1: Charred Chicken Thigh Tacos (batch)
-  B2: Charred Atlantic Salmon Fillets Skillet (batch)
+  B1: Smoky Beef Street Tacos (batch)
+  B2: Charred New York Strip Steak Skillet (batch)
   B3: Pork Loin Chops Weeknight Supper (batch)
-  B4: Ground Turkey Family Feast (batch)
-  B5: New York Strip Steak Harvest Plate (batch)
-  P1: Charred Cauliflower Shawarma Wraps (recent)
-  P2: Charred Cauliflower Curry (recent)
+  B4: Charred Atlantic Salmon Fillets Burgers (batch)
+  B5: Chicken Thighs Family Feast (batch)
+  P1: Charred Cauliflower Curry (recent)
+  P2: Charred Beef Fajita Bowls (recent)
   P3: Charred Cauliflower Power Bowl (recent)
-  P4: Weeknight Beef Ragu Rigatoni (saved this week)
-        B1    B2    B3    B4    B5    P1    P2    P3    P4
-  B1     —  0.00  0.00  0.00  0.00  0.11  0.00  0.00  0.00
-  B2  0.00     —  0.00  0.00  0.00  0.00  0.00  0.00  0.00
-  B3  0.00  0.00     —  0.00  0.00  0.00  0.00  0.00  0.00
-  B4  0.00  0.00  0.00     —  0.00  0.00  0.00  0.00  0.00
-  B5  0.00  0.00  0.00  0.00     —  0.00  0.00  0.00  0.00
-  max pairwise J = 0.11 (violation thresholds: >0.6 any, >0.45 same-anchor)
+  P4: Charred Cauliflower Shawarma Wraps (recent)
+  P5: Weeknight Beef Ragu Rigatoni (saved this week)
+        B1    B2    B3    B4    B5    P1    P2    P3    P4    P5
+  B1     —  0.00  0.00  0.00  0.00  0.00  0.00  0.00  0.12  0.00
+  B2  0.00     —  0.00  0.00  0.00  0.00  0.00  0.00  0.00  0.00
+  B3  0.00  0.00     —  0.00  0.00  0.00  0.00  0.00  0.00  0.00
+  B4  0.00  0.00  0.00     —  0.00  0.00  0.00  0.00  0.00  0.00
+  B5  0.00  0.00  0.00  0.00     —  0.00  0.00  0.00  0.00  0.00
+  max pairwise J = 0.12 (violation thresholds: >0.6 any, >0.45 same-anchor)
 carve-out proof: pin 'cherry tomatoes' in all 5 recipes = YES; overlap guard tripped by pin: NO (pins are carved out of every Jaccard set)
 overlap violations shipped unannotated: 0
+owned-perishable slot: #1 Smoky Beef Street Tacos (anchored on the owned ground beef; market pick: NO)
+recency exemption: vs recent 'Charred Beef Fajita Bowls' — 2 signature axes shared incl. the beef anchor; exempt on the anchor axis (owned perishable) -> effective 1, below the 2-axis suppression. Ingredient J vs it = 0.00 (beef itself is a planned shared purchase for the saved ragu, so it's carved out — dishes must differ beyond the beef).
+feed order: tier-leading dish is the all-pantry $0 dish (stub emitted it LAST; the sort promoted it): YES
+
+============================================================================
+MINI-CHECKS (P34 verify-2/3) — use_soon at N=3, then beef consumed
+============================================================================
+use_soon @ N=3: batch = 3 concepts (2 market picks); beef-anchored non-market: 1
+  #1 Seared Beef & Green Beans Stir-Fry
+  why leads with urgency: YES -> "Your ground beef should be used in the next day or two. A fast wok dinner from your kitche"
+beef consumed @ N=5: batch = 5 concepts (5 market picks); FORCED beef slot: 0 (guarantee inactive — nothing perishable left to protect). Beef market picks: 1 — the flyer's beef deal is fair game again once the owned beef is gone.
 

@@ -2,6 +2,7 @@
 
 import type { Recipe } from "@/lib/recipeTypes";
 import {
+  AllPantryBadge,
   CostLine,
   DifficultyPill,
   MarketPickBadge,
@@ -35,6 +36,7 @@ export default function RecipeCard({
           <div className="flex flex-wrap items-center gap-2">
             <DifficultyPill difficulty={recipe.difficulty} />
             {recipe.is_market_pick && <MarketPickBadge />}
+            <AllPantryBadge recipe={recipe} />
             <QualityChips recipe={recipe} />
           </div>
           <h3 className="mt-2 text-lg font-bold leading-snug text-ink">{recipe.title}</h3>

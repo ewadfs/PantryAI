@@ -10,6 +10,7 @@ persist a ``pantry_scans`` row.
 import asyncio
 import base64
 import json
+import logging
 import re
 from datetime import date, timedelta
 from decimal import Decimal, InvalidOperation
@@ -29,7 +30,12 @@ from app.models.pantry import PantryScan
 from app.models.store import SupportedChain
 from app.services import deal_fetcher, ingredient_matcher, storage
 
+logger = logging.getLogger(__name__)
+
 _MAX_CONCURRENT_SCANS = 3
+# Message Batches API polling for latency-insensitive circular extraction.
+_BATCH_POLL_S = 10
+_BATCH_MAX_WAIT_S = 900  # 15 min ceiling; circular batches finish in a few
 
 _PROMPT = """You are a kitchen inventory assistant. Analyze this photo of a \
 refrigerator, freezer, or pantry and identify the food items you can see.
@@ -468,6 +474,82 @@ class CircularExtractor:
     def __init__(self) -> None:
         self._client = AsyncAnthropic(api_key=settings.anthropic_api_key)
 
+    async def extract_deals_batched(
+        self, pages: list[tuple[int, bytes]], chain_name: str
+    ) -> dict[int, list[dict]]:
+        """Extract deals for every page via the Message Batches API (50% off).
+
+        Circular extraction is latency-insensitive (the cron tolerates
+        minutes), so we submit one request per page as a batch, poll until it
+        ends, then parse each result. Returns {page_number: deals}. Any page
+        that errors or fails to parse degrades to an empty list.
+        """
+        prompt = _DEAL_PROMPT.format(chain_name=chain_name)
+        requests = []
+        for page_number, image_bytes in pages:
+            b64 = base64.standard_b64encode(image_bytes).decode("ascii")
+            requests.append(
+                {
+                    "custom_id": f"page-{page_number}",
+                    "params": {
+                        "model": settings.vision_model,
+                        "max_tokens": 8000,
+                        "messages": [
+                            {
+                                "role": "user",
+                                "content": [
+                                    {
+                                        "type": "image",
+                                        "source": {
+                                            "type": "base64",
+                                            "media_type": _media_type(image_bytes),
+                                            "data": b64,
+                                        },
+                                    },
+                                    {"type": "text", "text": prompt},
+                                ],
+                            }
+                        ],
+                    },
+                }
+            )
+
+        batch = await self._client.messages.batches.create(requests=requests)
+        logger.info("Submitted circular batch %s (%d pages)", batch.id, len(requests))
+
+        # Poll until the batch ends (bounded); the cron tolerates minutes.
+        waited = 0
+        while batch.processing_status != "ended" and waited < _BATCH_MAX_WAIT_S:
+            await asyncio.sleep(_BATCH_POLL_S)
+            waited += _BATCH_POLL_S
+            batch = await self._client.messages.batches.retrieve(batch.id)
+        if batch.processing_status != "ended":
+            logger.warning("Circular batch %s did not finish in %ds", batch.id, waited)
+            return {}
+
+        out: dict[int, list[dict]] = {}
+        async for entry in await self._client.messages.batches.results(batch.id):
+            try:
+                page_number = int(str(entry.custom_id).split("-")[-1])
+            except (TypeError, ValueError):
+                continue
+            if entry.result.type != "succeeded":
+                out[page_number] = []
+                continue
+            message = entry.result.message
+            ai_metering.record_usage(
+                settings.vision_model, message.usage, category="circular", batch_api=True
+            )
+            text = "".join(b.text for b in message.content if b.type == "text")
+            try:
+                data = _extract_json(text)
+                deals = data.get("deals", [])
+                out[page_number] = deals if isinstance(deals, list) else []
+            except (json.JSONDecodeError, ValueError):
+                out[page_number] = []
+        logger.info("Circular batch %s parsed %d pages", batch.id, len(out))
+        return out
+
     async def extract_deals_from_page(
         self, image_bytes: bytes, chain_name: str
     ) -> list[dict]:
@@ -606,20 +688,23 @@ class CircularExtractor:
         await db.commit()
 
         keys = fetch.image_keys or []
+        # Download page images (concurrency-capped), then extract every page in
+        # one Message Batches API job (50% off) — the cron tolerates minutes.
         sem = asyncio.Semaphore(_MAX_CONCURRENT_PAGES)
 
-        async def _page(page_number: int, key: str) -> tuple[int, list[dict]]:
+        async def _load(page_number: int, key: str) -> tuple[int, bytes]:
             async with sem:
-                img = await storage.get_image_bytes(key)
-                deals = await self.extract_deals_from_page(img, chain_name)
-            return page_number, deals
+                return page_number, await storage.get_image_bytes(key)
+
+        pages = await asyncio.gather(
+            *(_load(n, key) for n, key in enumerate(keys, start=1))
+        )
 
         with ai_metering.metering(
             "circular", circular_fetch_id=fetch.id
         ) as _cost_events:
-            results = await asyncio.gather(
-                *(_page(n, key) for n, key in enumerate(keys, start=1))
-            )
+            deals_by_page = await self.extract_deals_batched(pages, chain_name)
+        results = [(pn, deals_by_page.get(pn, [])) for pn, _img in pages]
 
         rows: list[DealCache] = []
         matched = 0

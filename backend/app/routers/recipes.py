@@ -1,6 +1,6 @@
 """Recipe generation, rating, and the This Week list."""
 
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
 from sqlalchemy import select
@@ -68,14 +68,22 @@ async def generate(
     reads = [
         RecipeRead.model_validate(recipe_engine.recipe_to_read(r)) for r in recipes
     ]
-    ids = [r.id for r in recipes]
-    if ids:
-        background_tasks.add_task(recipe_engine.run_details_bg, current_user.id, ids)
+    # Lazy details: eagerly write only the top-3 critic-scored concepts now; the
+    # rest fill in on the user's first tap or save.
+    eager_ids = recipe_engine._eager_detail_ids(recipes)
+    if eager_ids:
+        background_tasks.add_task(
+            recipe_engine.run_details_bg, current_user.id, eager_ids
+        )
     return GenerateResponse(recipes=reads)
+
+
+_PREGEN_STALE_HOURS = 12
 
 
 @router.get("/recipes/latest", response_model=LatestResponse)
 async def latest(
+    background_tasks: BackgroundTasks,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> LatestResponse:
@@ -86,6 +94,17 @@ async def latest(
         .order_by(Recipe.generated_at.desc())
         .limit(1)
     )
+
+    # Pre-gen discipline (Prompt 27): on the first app-open of the day — when the
+    # newest batch is >12h old (or absent) — kick off one background batch. The
+    # last_pregen_at debounce keeps /latest polling from spawning duplicates.
+    cutoff = _now() - timedelta(hours=_PREGEN_STALE_HOURS)
+    batch_stale = newest is None or newest < cutoff
+    pregen_idle = current_user.last_pregen_at is None or current_user.last_pregen_at < cutoff
+    if batch_stale and pregen_idle:
+        current_user.last_pregen_at = _now()
+        await db.flush()
+        background_tasks.add_task(recipe_engine.warm_generate, current_user.id)
     if newest is None:
         return LatestResponse(
             generated_at=None, store_name=None, direction=None,
@@ -126,10 +145,17 @@ async def latest(
 @router.get("/recipes/{recipe_id}", response_model=RecipeRead)
 async def get_recipe(
     recipe_id: int,
+    background_tasks: BackgroundTasks,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> RecipeRead:
     recipe = await _owned_recipe(db, recipe_id, current_user.id)
+    # Lazy details: tapping a not-yet-detailed concept kicks off its detail
+    # generation; the client polls this endpoint until status flips to 'ready'.
+    if recipe.status == "concept":
+        background_tasks.add_task(
+            recipe_engine.run_details_bg, current_user.id, [recipe_id]
+        )
     return RecipeRead.model_validate(recipe_engine.recipe_to_read(recipe))
 
 
@@ -151,12 +177,19 @@ async def rate_recipe(
 async def save_to_week(
     recipe_id: int,
     payload: SaveToWeekRequest,
+    background_tasks: BackgroundTasks,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> WeekRecipeRead:
     """Add a recipe to a week (default: the most recent Sunday). Idempotent."""
     recipe = await _owned_recipe(db, recipe_id, current_user.id)
     week_start = payload.week_start or recipe_engine.week_start_for(date.today())
+    # Saving a still-concept recipe triggers its detail generation immediately so
+    # a later shopping-list build is never blocked on a concept-status recipe.
+    if recipe.status == "concept":
+        background_tasks.add_task(
+            recipe_engine.run_details_bg, current_user.id, [recipe_id]
+        )
 
     wr = await db.scalar(
         select(WeekRecipe).where(

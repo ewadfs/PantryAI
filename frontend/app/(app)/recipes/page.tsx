@@ -258,29 +258,6 @@ export default function RecipesPage() {
     pinsRef.current = pins;
   }, [pins]);
 
-  // Poll for the background batch anchored to the newly-selected store.
-  const pollForNewBatch = useCallback((storeName: string) => {
-    if (pollTimer.current) clearInterval(pollTimer.current);
-    let tries = 0;
-    pollTimer.current = setInterval(async () => {
-      tries += 1;
-      try {
-        const res = await getLatestRecipes();
-        if (res.store_name === storeName && res.recipes.length) {
-          setRecipes(res.recipes);
-          setGeneratedAt(res.generated_at);
-          setBatchStore(res.store_name);
-          setBatchDirection(res.direction ?? null);
-          setBatchDifficulties(res.difficulties ?? []);
-          if (pollTimer.current) clearInterval(pollTimer.current);
-        }
-      } catch {
-        /* keep polling */
-      }
-      if (tries >= 20 && pollTimer.current) clearInterval(pollTimer.current);
-    }, 4000);
-  }, []);
-
   async function onSelectStore(id: number) {
     setSwitching(true);
     setError(null);
@@ -288,8 +265,8 @@ export default function RecipesPage() {
       const updated = await setDefaultStore(id);
       setStores(updated);
       setStoreSheet(false);
-      const newName = (updated.find((s) => s.is_default) ?? updated[0])?.store.store_name;
-      if (newName) pollForNewBatch(newName); // note stays until the new batch lands
+      // Prompt 27: switching stores no longer auto-generates a batch. The
+      // staleness note + emphasized Generate button cover intent.
     } catch (e) {
       setError(e instanceof Error ? e.message : "Could not switch stores.");
     } finally {
@@ -535,8 +512,8 @@ export default function RecipesPage() {
             <div>
               {stale ? (
                 <div className="mb-3 rounded-xl bg-warn-soft px-4 py-3 text-sm text-warn">
-                  These were generated for {batchStore}. New {currentStoreName} recipes
-                  are on the way…
+                  These were built for {batchStore}. Tap ✨ Generate for fresh{" "}
+                  {currentStoreName} recipes.
                 </div>
               ) : (
                 batchLabel && (

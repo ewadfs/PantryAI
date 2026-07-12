@@ -56,6 +56,9 @@ class User(Base):
     recipes_per_generation: Mapped[int] = mapped_column(
         SmallInteger, nullable=False, server_default=text("5")
     )
+    # Last time a pre-generation was kicked off (debounces first-open-of-day
+    # pre-gen so /recipes/latest polling can't spawn repeated batches).
+    last_pregen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()

@@ -107,7 +107,9 @@ async def set_default_store(
         s.is_default = s.store_location_id == store_location_id
     await db.flush()
 
-    background_tasks.add_task(recipe_engine.warm_generate, current_user.id)
+    # Prompt 27 pre-gen discipline: a store switch no longer auto-generates a
+    # batch (that burned a paid generation on every toggle). The Recipes tab
+    # shows a staleness note and the emphasized Generate button covers intent.
     return await list_my_stores(current_user=current_user, db=db)
 
 

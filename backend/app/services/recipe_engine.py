@@ -28,7 +28,7 @@ from app.models.pantry import PantryItem
 from app.models.recipe import Recipe, WeekRecipe
 from app.models.store import StoreLocation, SupportedChain, UserStore
 from app.models.user import User
-from app.services import ingredient_matcher, quantities
+from app.services import ai_metering, ingredient_matcher, quantities
 from app.services.vision import _extract_json
 
 logger = logging.getLogger(__name__)
@@ -36,6 +36,7 @@ logger = logging.getLogger(__name__)
 _MEALS_PER_DAY = 3
 _CONCEPT_MAX_TOKENS = 1600     # terse concepts stay fast (few hundred tokens)
 _DETAIL_MAX_TOKENS = 3500      # one full recipe
+_EAGER_DETAILS = 3            # top-N concepts detailed eagerly; rest are lazy
 _CONTEXT_DEALS = 30            # relevant deals shown to the model (of 400+)
 _RECENT_TITLES = 15
 _USE_SOON_WINDOW_DAYS = 2
@@ -56,25 +57,27 @@ list (mark it to buy, don't silently claim it's in the pantry).
 Ingredient naming: put a GENERIC name in generic_name (e.g. "chipotle salsa"), and \
 any brand in a SEPARATE nullable brand field. Never embed the brand in the name."""
 
+# L1 — static rules (no per-call variables), the cacheable prefix shared across
+# every concept call and across consecutive presses within the cache TTL.
 _CONCEPT_SYSTEM = (
     """You are a skilled, creative home cook proposing tonight's dinner options for \
-a specific person. Propose exactly {n_concepts} recipe CONCEPTS with this difficulty \
-mix: {tier_plan}. Difficulty guide: easy = ≤15 min active & ≤6 ingredients; medium = \
-15-30 min active; hard = 30+ min active, impressive result. Order them easy → medium \
-→ hard. Concepts only — no full quantities or steps yet.
+a specific person. Propose recipe CONCEPTS at the exact count and difficulty mix \
+given in the request. Difficulty guide: easy = ≤15 min active & ≤6 ingredients; \
+medium = 15-30 min active; hard = 30+ min active, impressive result. Order them \
+easy → medium → hard. Concepts only — no full quantities or steps yet.
 
 Hard requirements:
-1. Respect ALL allergies and excluded ingredients — non-negotiable: {allergies_excluded}
+1. Respect ALL allergies and excluded ingredients in the DINER PROFILE — non-negotiable.
 2. Prioritize ingredients already in their kitchen; the best recipe buys the least.
 3. Use items flagged use_soon early and prominently.
 4. When something must be bought, strongly prefer items from the deals list and say so.
-5. Target ≈{calorie_per_serving} calories per serving (protein has a hard floor below).
-6. Lean toward their cuisines: {cuisine_preferences}; avoid repeating: {recent_titles}
-7. servings = {household_size}
+5. Hit the per-serving calorie goal in the profile (protein has a hard floor below).
+6. Lean toward the profile's cuisines; avoid repeating the recent titles in the request.
+7. servings = the household size in the profile.
 8. Assume pantry staples (salt, pepper, oils, common spices) are available.
-9. The {n_concepts} concepts must be mutually distinct dinners — each must differ \
-from EVERY other in this batch on at least TWO of the three signature axes \
-{{anchor_ingredient, dish_format, cuisine}}. No two near-identical dishes.
+9. The concepts must be mutually distinct dinners — each must differ from EVERY other \
+in this batch on at least TWO of the three signature axes \
+{anchor_ingredient, dish_format, cuisine}. No two near-identical dishes.
 
 """
     + _TECHNIQUE_RULES
@@ -94,11 +97,24 @@ BE TERSE — this is a fast preview, not the full recipe. description ≤ 12 wor
 why_this_recipe ≤ 14 words; at most 3 tags. No extra prose or explanation.
 
 Return ONLY valid JSON:
-{{"recipes":[{{title, description, difficulty, prep_time_min, cook_time_min, \
+{"recipes":[{title, description, difficulty, prep_time_min, cook_time_min, \
 total_time_min, servings, why_this_recipe, cuisine, dish_format, anchor_ingredient, \
-tags:[...], nutrition_per_serving:{{calories, protein_g}}, \
-key_ingredients:[{{generic_name, brand, in_pantry, on_sale, sale_price}}]}}]}}"""
+tags:[...], nutrition_per_serving:{calories, protein_g}, \
+key_ingredients:[{generic_name, brand, in_pantry, on_sale, sale_price}]}]}"""
 )
+
+
+def _concept_profile(user: User) -> str:
+    """L2 — the slow-changing diner profile (allergies, targets, cuisines,
+    household). Cached alongside pantry/deals; changes at most a few times a day."""
+    return (
+        "DINER PROFILE:\n"
+        f"- allergies: {_fmt_list(user.allergies)}; "
+        f"excluded: {_fmt_list(user.excluded_ingredients)}\n"
+        f"- target ≈{round(user.calorie_target / _MEALS_PER_DAY)} calories per serving\n"
+        f"- cuisines: {_fmt_list(user.cuisine_preferences)}\n"
+        f"- household size (servings): {user.household_size}"
+    )
 
 _DETAIL_SYSTEM = (
     """You are a skilled home cook writing the FULL recipe for a dinner concept you \
@@ -111,6 +127,9 @@ include every ingredient with a unit.
 - Assume pantry staples (salt, pepper, oils, common spices) are available.
 - Mark in_pantry true for ingredients the person already has (see their pantry). \
 Mark on_sale only if it appears in the deals list, and include sale_price then.
+- Keep it to at most 8 numbered steps. Be concise — merge trivial actions into one \
+step and cut filler. But KEEP the one or two lines that teach a technique-critical \
+"why" (e.g. why a dry surface crisps, why spices bloom late); those earn their words.
 
 """
     + _TECHNIQUE_RULES
@@ -343,8 +362,8 @@ def _variety_block(recent_sigs: list[str], skipped_sigs: list[str]) -> str:
 # Critic pass (Stage 1.5)
 # --------------------------------------------------------------------------- #
 _CRITIC_SYSTEM = """\
-You are a demanding culinary reviewer. You are given 3 dinner CONCEPTS and a diner
-profile. Score each concept 1-10 overall and flag which rubric items it fails.
+You are a demanding culinary reviewer. You are given a set of dinner CONCEPTS and a
+diner profile. Score each concept 1-10 overall and flag which rubric items it fails.
 Judge against this rubric:
 
 1. TECHNIQUE PHYSICS — no wet/sugary marinades before a high-heat sear; ground
@@ -876,7 +895,8 @@ async def _run_critic(
     )
     data = await _call_json(
         client, model=settings.critic_model_id, max_tokens=1200,
-        system=_CRITIC_SYSTEM, user_msg=user_msg,
+        system=_cached_system(_CRITIC_SYSTEM), user_msg=user_msg,
+        category="critic",
     )
     reviews = data.get("reviews") if isinstance(data, dict) else None
     return reviews if isinstance(reviews, list) else []
@@ -900,10 +920,12 @@ async def _regen_concept(
         "issue above is usually exactly this)."
     )
     prior = json.dumps(_concept_brief(concept), ensure_ascii=False)
-    msg = f"{ctx_text}\n\nConcept to fix:\n{prior}\n\nReturn the fixed concept now."
+    # Correction rides in the user message so the cached L1+L2 system prefix
+    # (shared with the main concept call) still yields cache reads.
+    msg = f"{ctx_text}{correction}\n\nConcept to fix:\n{prior}\n\nReturn the fixed concept now."
     data = await _call_json(
         client, model=settings.recipe_model, max_tokens=_CONCEPT_MAX_TOKENS,
-        system=base_system + correction, user_msg=msg,
+        system=base_system, user_msg=msg, category="generation",
     )
     recs = data.get("recipes") if isinstance(data, dict) else None
     if isinstance(recs, list) and recs and isinstance(recs[0], dict):
@@ -989,10 +1011,10 @@ async def _regen_for_variety(
         "invent a protein or item the pantry doesn't show."
     )
     prior = json.dumps(_concept_brief(concept), ensure_ascii=False)
-    msg = f"{ctx_text}\n\nConcept that repeats:\n{prior}\n\nReturn the fresh concept now."
+    msg = f"{ctx_text}{correction}\n\nConcept that repeats:\n{prior}\n\nReturn the fresh concept now."
     data = await _call_json(
         client, model=settings.recipe_model, max_tokens=_CONCEPT_MAX_TOKENS,
-        system=base_system + correction, user_msg=msg,
+        system=base_system, user_msg=msg, category="generation",
     )
     recs = data.get("recipes") if isinstance(data, dict) else None
     if isinstance(recs, list) and recs and isinstance(recs[0], dict):
@@ -1057,6 +1079,8 @@ async def generate_concepts(
     pinned_ids: list[int] | None = None,
     direction: str | None = None,
     difficulties: list[str] | None = None,
+    *,
+    category: str = "generation",
 ) -> list[Recipe]:
     """One fast Claude call → N persisted concept recipes (status='concept').
 
@@ -1088,50 +1112,50 @@ async def generate_concepts(
 
     n = _clamp_n(user.recipes_per_generation)
     tiers = _clean_difficulties(difficulties)
-    system = _CONCEPT_SYSTEM.format(
-        n_concepts=n,
-        tier_plan=_tier_plan_text(n, tiers),
-        allergies_excluded=(
-            f"allergies={_fmt_list(user.allergies)}; "
-            f"excluded={_fmt_list(user.excluded_ingredients)}"
-        ),
-        calorie_per_serving=round(user.calorie_target / _MEALS_PER_DAY),
-        protein_per_serving=round(user.protein_target / _MEALS_PER_DAY),
-        cuisine_preferences=_fmt_list(user.cuisine_preferences),
-        recent_titles=_fmt_list(list(recent_titles)),
-        household_size=user.household_size,
-    )
-    full_system = (
-        system
+    # Cache layers: L1 = static rules (_CONCEPT_SYSTEM), L2 = slow-changing
+    # context (profile + protein floor + taste + rating history + pantry/deals).
+    # Per-press variables (tier plan, recent titles, variety, direction, pins)
+    # live in the user message so the cached prefix survives across presses.
+    concept_l2 = (
+        _concept_profile(user)
         + _protein_block(ctx.protein_floor)
         + ctx.taste_block
-        + _direction_block(ctx.direction)
         + ctx.history_block
-        + ctx.variety_block
-        + ctx.pin_block
+        + "\n\n"
+        + ctx.context_text
     )
-    user_msg = ctx.context_text + f"\n\nPropose tonight's {n} dinner concepts now."
+    system_blocks = _cached_system(_CONCEPT_SYSTEM, concept_l2)
+    user_msg = (
+        f"THIS BATCH: propose exactly {n} concepts with difficulty mix: "
+        f"{_tier_plan_text(n, tiers)}.\n"
+        f"Avoid repeating these recent titles: {_fmt_list(list(recent_titles))}."
+        + ctx.variety_block
+        + _direction_block(ctx.direction)
+        + ctx.pin_block
+        + f"\n\nPropose tonight's {n} dinner concepts now."
+    )
 
     client = AsyncAnthropic(api_key=settings.anthropic_api_key)
-    data = await _call_json(
-        client, model=settings.recipe_model,
-        max_tokens=max(_CONCEPT_MAX_TOKENS, 560 * n),
-        system=full_system, user_msg=user_msg,
-    )
-    raw = [r for r in (data.get("recipes", []) if isinstance(data, dict) else [])
-           if isinstance(r, dict)][:n]
-
-    # Stage 1.5 critic: score, then regenerate weak concepts once.
-    critics: list[dict] = [{} for _ in raw]
-    if raw:
-        raw, critics = await _critique_and_fix(
-            client, raw, ctx.protein_floor, _profile_text(user, ctx),
-            full_system, user_msg, _pantry_qty_lines(ctx.pantry),
+    with ai_metering.metering(category, user_id=user.id) as events:
+        data = await _call_json(
+            client, model=settings.recipe_model,
+            max_tokens=max(_CONCEPT_MAX_TOKENS, 560 * n),
+            system=system_blocks, user_msg=user_msg, category=category,
         )
-        # Variety guard: never re-serve a recent signature under a new name, and
-        # keep the batch mutually distinct (each concept differs from EVERY other
-        # on 2+ signature axes). Runs even with no history so intra-batch holds.
-        raw = await _enforce_variety(client, raw, recent_sigs, full_system, user_msg)
+        raw = [r for r in (data.get("recipes", []) if isinstance(data, dict) else [])
+               if isinstance(r, dict)][:n]
+
+        # Stage 1.5 critic: score, then regenerate weak concepts once.
+        critics: list[dict] = [{} for _ in raw]
+        if raw:
+            raw, critics = await _critique_and_fix(
+                client, raw, ctx.protein_floor, _profile_text(user, ctx),
+                system_blocks, user_msg, _pantry_qty_lines(ctx.pantry),
+            )
+            # Variety guard: never re-serve a recent signature under a new name,
+            # and keep the batch mutually distinct (each concept differs from
+            # EVERY other on 2+ axes). Runs even with no history.
+            raw = await _enforce_variety(client, raw, recent_sigs, system_blocks, user_msg)
 
     persisted: list[Recipe] = []
     for r, critic in zip(raw, critics):
@@ -1172,6 +1196,12 @@ async def generate_concepts(
         persisted.append(recipe)
 
     await db.flush()
+    # Stamp the batch timestamp onto this press's cost events, then persist them.
+    batch_at = persisted[0].generated_at if persisted else None
+    if batch_at:
+        for e in events:
+            e["batch_at"] = batch_at
+    await ai_metering.persist_events(db, events)
     return persisted
 
 
@@ -1185,6 +1215,8 @@ def _detail_user_msg(recipe: Recipe, ctx: _Ctx) -> str:
         for k in keys
         if isinstance(k, dict)
     )
+    # Only the per-recipe concept goes here (L3). The shared pantry/deals context
+    # lives in the cached system prefix so the N detail calls reuse it.
     return (
         f"CONCEPT to write in full:\n"
         f"Title: {recipe.title}\n"
@@ -1192,15 +1224,40 @@ def _detail_user_msg(recipe: Recipe, ctx: _Ctx) -> str:
         f"Servings: {recipe.servings}\n"
         f"Description: {recipe.description}\n"
         f"Key ingredients: {key_lines}\n\n"
-        f"{ctx.context_text}\n\n"
         f"Write the full recipe now."
     )
 
 
+def _cached_system(l1: str, l2: str = "") -> list[dict]:
+    """Layer a system prompt for prompt caching: L1 (static rules) and an
+    optional L2 (slow-changing context), each ending in a cache_control
+    breakpoint. Calls that share these exact blocks reuse the cached prefix
+    (one write, then ~90%-off reads)."""
+    blocks: list[dict] = [
+        {"type": "text", "text": l1, "cache_control": {"type": "ephemeral"}}
+    ]
+    if l2:
+        blocks.append(
+            {"type": "text", "text": l2, "cache_control": {"type": "ephemeral"}}
+        )
+    return blocks
+
+
 async def _call_json(
-    client: AsyncAnthropic, *, model: str, max_tokens: int, system: str, user_msg: str
+    client: AsyncAnthropic,
+    *,
+    model: str,
+    max_tokens: int,
+    system: str | list[dict],
+    user_msg: str,
+    category: str | None = None,
 ) -> dict:
-    """Claude call returning parsed JSON, retrying once on a parse failure."""
+    """Claude call returning parsed JSON, retrying once on a parse failure.
+
+    ``system`` may be a plain string or a list of content blocks (from
+    ``_cached_system``) for prompt caching. Every call's token usage + cost is
+    recorded into the active metering scope, tagged ``category``.
+    """
     for _ in range(2):
         message = await client.messages.create(
             model=model,
@@ -1208,6 +1265,7 @@ async def _call_json(
             system=system,
             messages=[{"role": "user", "content": user_msg}],
         )
+        ai_metering.record_usage(model, message.usage, category=category)
         text = "".join(b.text for b in message.content if b.type == "text")
         try:
             data = _extract_json(text)
@@ -1228,22 +1286,28 @@ def _protein_of(data: dict) -> float | None:
         return None
 
 
-async def _fill_details(db: AsyncSession, recipes: list[Recipe], ctx: _Ctx) -> None:
+async def _fill_details(
+    db: AsyncSession, recipes: list[Recipe], ctx: _Ctx, *, category: str = "generation"
+) -> None:
     """Generate full details for concept recipes: parallel Claude, serial writes.
 
     Enforces the protein floor: a slot whose detail comes back under the floor
     gets one corrective regeneration; if it still falls short we serve it but
     log a warning (the prompt needs work, not the user's dinner blocked).
+
+    The shared context (rules L1 + pantry/deals/floor/pins L2) is a cached system
+    prefix, so the N parallel detail calls do one cache write + N-1 cheap reads.
     """
     client = AsyncAnthropic(api_key=settings.anthropic_api_key)
     floor = ctx.protein_floor
-    detail_system = _DETAIL_SYSTEM + _protein_block(floor) + ctx.pin_block
+    detail_l2 = _protein_block(floor) + ctx.pin_block + "\n\n" + ctx.context_text
+    detail_system = _cached_system(_DETAIL_SYSTEM, detail_l2)
     msgs = [_detail_user_msg(r, ctx) for r in recipes]
     results = await asyncio.gather(
         *(
             _call_json(
                 client, model=settings.detail_model, max_tokens=_DETAIL_MAX_TOKENS,
-                system=detail_system, user_msg=m,
+                system=detail_system, user_msg=m, category=category,
             )
             for m in msgs
         ),
@@ -1264,7 +1328,7 @@ async def _fill_details(db: AsyncSession, recipes: list[Recipe], ctx: _Ctx) -> N
             )
             retry = await _call_json(
                 client, model=settings.detail_model, max_tokens=_DETAIL_MAX_TOKENS,
-                system=detail_system + correction, user_msg=msgs[i],
+                system=detail_system, user_msg=msgs[i] + correction, category=category,
             )
             if isinstance(retry, dict) and retry:
                 data = retry
@@ -1300,14 +1364,22 @@ async def _fill_details(db: AsyncSession, recipes: list[Recipe], ctx: _Ctx) -> N
     await db.flush()
 
 
-async def run_details_bg(user_id: int, recipe_ids: list[int]) -> None:
-    """Background entrypoint: fill details for the given concept recipes."""
+async def run_details_bg(
+    user_id: int, recipe_ids: list[int], *, category: str = "generation"
+) -> None:
+    """Background entrypoint: fill details for the given concept recipes.
+
+    Only recipes still in 'concept' status are detailed, so the on-demand path
+    (tap / save) and the eager path never double-bill the same recipe.
+    """
     async with AsyncSessionLocal() as db:
         recipes = (
             (
                 await db.execute(
                     select(Recipe).where(
-                        Recipe.id.in_(recipe_ids), Recipe.user_id == user_id
+                        Recipe.id.in_(recipe_ids),
+                        Recipe.user_id == user_id,
+                        Recipe.status == "concept",
                     )
                 )
             )
@@ -1322,8 +1394,24 @@ async def run_details_bg(user_id: int, recipe_ids: list[int]) -> None:
         ctx = await _load_context(db, user)
         # Re-apply the batch's pin requirement to the detail stage.
         ctx.pin_block = _pin_block(recipes[0].pinned_items_json or [])
-        await _fill_details(db, recipes, ctx)
+        batch_at = recipes[0].generated_at
+        with ai_metering.metering(category, user_id=user_id, batch_at=batch_at) as events:
+            await _fill_details(db, recipes, ctx, category=category)
+        await ai_metering.persist_events(db, events)
         await db.commit()
+
+
+def _eager_detail_ids(recipes: list[Recipe], k: int = _EAGER_DETAILS) -> list[int]:
+    """The top-k concepts by critic score to detail eagerly; the rest wait for a
+    tap or save (lazy details, Prompt 27)."""
+    def score(r: Recipe) -> float:
+        c = r.critic_json if isinstance(r.critic_json, dict) else {}
+        try:
+            return float(c.get("score"))
+        except (TypeError, ValueError):
+            return 0.0
+    ranked = sorted(recipes, key=score, reverse=True)
+    return [r.id for r in ranked[:k]]
 
 
 async def _last_difficulties(db: AsyncSession, user_id: int) -> list[str]:
@@ -1338,15 +1426,28 @@ async def _last_difficulties(db: AsyncSession, user_id: int) -> list[str]:
 
 
 async def warm_generate(user_id: int) -> None:
-    """Background: full two-stage generation so the Recipes tab is warm."""
+    """Background: two-stage pre-generation so the Recipes tab is warm.
+
+    Lazy details apply here too: only the top-3 concepts are detailed eagerly;
+    the rest fill in on the user's first tap or save.
+    """
     async with AsyncSessionLocal() as db:
         user = await db.get(User, user_id)
         if user is None:
             return
         difficulties = await _last_difficulties(db, user_id)
-        recipes = await generate_concepts(db, user, difficulties=difficulties)
+        recipes = await generate_concepts(
+            db, user, difficulties=difficulties, category="pre-generation"
+        )
         await db.commit()
         if recipes:
+            eager_ids = set(_eager_detail_ids(recipes))
+            eager = [r for r in recipes if r.id in eager_ids]
             ctx = await _load_context(db, user)
-            await _fill_details(db, recipes, ctx)
+            batch_at = recipes[0].generated_at
+            with ai_metering.metering(
+                "pre-generation", user_id=user_id, batch_at=batch_at
+            ) as events:
+                await _fill_details(db, eager, ctx, category="pre-generation")
+            await ai_metering.persist_events(db, events)
             await db.commit()

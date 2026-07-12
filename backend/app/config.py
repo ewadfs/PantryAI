@@ -52,9 +52,11 @@ class Settings(BaseSettings):
     # Anthropic model selection
     vision_model: str = "claude-sonnet-4-6"
     recipe_model: str = "claude-sonnet-4-6"  # Stage 1: recipe concepts
-    # Stage 2: full recipe details. Defaults to the same model but is
-    # env-overridable (DETAIL_MODEL) so we can A/B a cheaper model later.
-    detail_model: str = "claude-sonnet-4-6"
+    # Stage 2: full recipe details. Haiku by default (Prompt 27 cost work):
+    # details are constrained, formulaic writing that Haiku handles well at
+    # ~1/3 the input and 1/3 the output price of Sonnet. Override via
+    # DETAIL_MODEL to A/B a stronger model.
+    detail_model: str = "claude-haiku-4-5"
     # Stage 1.5 critic. Haiku by default: measured >5s on Sonnet for 3 concepts,
     # over the latency budget, and scoring is a cheap task. Override via CRITIC_MODEL
     # (empty string → falls back to detail_model).

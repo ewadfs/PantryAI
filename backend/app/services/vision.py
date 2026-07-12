@@ -23,6 +23,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.models.deal import CircularFetch, DealCache
+from app.services import ai_metering
 from app.models.ingredient import IngredientMaster
 from app.models.pantry import PantryScan
 from app.models.store import SupportedChain
@@ -153,6 +154,9 @@ class PantryScanner:
                         ],
                     }
                 ],
+            )
+            ai_metering.record_usage(
+                settings.vision_model, message.usage, category="scan"
             )
             text = "".join(
                 block.text for block in message.content if block.type == "text"
@@ -299,7 +303,9 @@ async def process_pantry_scan(
         async with sem:
             return await scanner.scan_pantry_image(img)
 
-    per_photo = await asyncio.gather(*(_scan(img) for img in images))
+    with ai_metering.metering("scan", user_id=user_id) as _cost_events:
+        per_photo = await asyncio.gather(*(_scan(img) for img in images))
+    await ai_metering.persist_events(db, _cost_events)
 
     # 4. Merge items; collect uncertain entries tagged with their photo index.
     items = _merge_items(per_photo)
@@ -494,6 +500,9 @@ class CircularExtractor:
                     }
                 ],
             )
+            ai_metering.record_usage(
+                settings.vision_model, message.usage, category="circular"
+            )
             text = "".join(
                 block.text for block in message.content if block.type == "text"
             )
@@ -605,9 +614,12 @@ class CircularExtractor:
                 deals = await self.extract_deals_from_page(img, chain_name)
             return page_number, deals
 
-        results = await asyncio.gather(
-            *(_page(n, key) for n, key in enumerate(keys, start=1))
-        )
+        with ai_metering.metering(
+            "circular", circular_fetch_id=fetch.id
+        ) as _cost_events:
+            results = await asyncio.gather(
+                *(_page(n, key) for n, key in enumerate(keys, start=1))
+            )
 
         rows: list[DealCache] = []
         matched = 0
@@ -631,6 +643,7 @@ class CircularExtractor:
                 rows.append(row)
 
         db.add_all(rows)
+        await ai_metering.persist_events(db, _cost_events)
         await db.flush()
         return {
             "pages": len(keys),

@@ -1,5 +1,5 @@
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
-from sqlalchemy import delete, select
+from sqlalchemy import delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
@@ -148,8 +148,23 @@ async def set_default_store(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="That store is not one of your saved stores.",
         )
-    for s in saved:
-        s.is_default = s.store_location_id == store_location_id
+    # Clear THEN set, as two ordered statements in one transaction: the partial
+    # unique index (one default per user) is non-deferrable, so a transient
+    # two-default state mid-flush would violate it. Clearing first guarantees
+    # there's never a second default at any statement boundary.
+    await db.execute(
+        update(UserStore)
+        .where(UserStore.user_id == current_user.id, UserStore.is_default.is_(True))
+        .values(is_default=False)
+    )
+    await db.execute(
+        update(UserStore)
+        .where(
+            UserStore.user_id == current_user.id,
+            UserStore.store_location_id == store_location_id,
+        )
+        .values(is_default=True)
+    )
     await db.flush()
 
     # Prompt 24 C2: switching to a store activates its chain×region deals.

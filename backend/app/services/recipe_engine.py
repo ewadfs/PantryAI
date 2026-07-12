@@ -13,6 +13,7 @@ import asyncio
 import json
 import logging
 import math
+import re
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
@@ -204,21 +205,45 @@ def _use_soon(item: PantryItem, today: date) -> bool:
 async def _default_store(
     db: AsyncSession, user_id: int
 ) -> tuple[int | None, str | None, str | None, str | None]:
-    """(chain_id, chain_name, store_name, region_key) of the user's default store."""
-    row = (
+    """(chain_id, chain_name, store_name, region_key) of the user's default store.
+
+    Self-healing (Prompt 31): a partial unique index should guarantee exactly one
+    default, but if the data is ever inconsistent (multiple defaults, or none with
+    stores saved) we pick the most-recently-added candidate and log a warning
+    rather than crashing the whole generation."""
+    rows = (
         await db.execute(
             select(
+                UserStore.is_default,
                 StoreLocation.chain_id,
                 SupportedChain.chain_name,
                 StoreLocation.store_name,
                 StoreLocation.region_key,
             )
-            .join(UserStore, UserStore.store_location_id == StoreLocation.id)
+            .join(StoreLocation, StoreLocation.id == UserStore.store_location_id)
             .join(SupportedChain, SupportedChain.id == StoreLocation.chain_id)
-            .where(UserStore.user_id == user_id, UserStore.is_default.is_(True))
+            .where(UserStore.user_id == user_id)
+            .order_by(UserStore.added_at.desc(), UserStore.id.desc())
         )
-    ).first()
-    return (row[0], row[1], row[2], row[3]) if row else (None, None, None, None)
+    ).all()
+    if not rows:
+        return (None, None, None, None)
+    defaults = [r for r in rows if r.is_default]
+    if len(defaults) == 1:
+        chosen = defaults[0]
+    elif len(defaults) > 1:
+        logger.warning(
+            "User %s has %d default stores (expected 1) — using most recent.",
+            user_id, len(defaults),
+        )
+        chosen = defaults[0]  # rows are added_at-desc → most recent first
+    else:
+        logger.warning(
+            "User %s has %d saved store(s) but no default — using most recent.",
+            user_id, len(rows),
+        )
+        chosen = rows[0]
+    return (chosen.chain_id, chosen.chain_name, chosen.store_name, chosen.region_key)
 
 
 async def _all_current_deals(
@@ -332,14 +357,24 @@ def _select_market_deals(
     count: int,
     exclude_iids: set[int],
     pantry_iids: set[int],
+    exclude_terms: list[str] | None = None,
 ) -> list[DealCache]:
     """Pick ``count`` distinct deal anchors: proteins then hero produce, matched
     to an ingredient and savings-ranked, never something already in the pantry.
     Prefers anchors NOT used as market picks in recent batches (rotation, A5),
-    backfilling with recent ones only if there aren't enough fresh alternatives."""
+    backfilling with recent ones only if there aren't enough fresh alternatives.
+
+    ``exclude_terms`` (Prompt 30): when a counted direction caps some categories,
+    surplus market picks must be in UNREQUESTED categories — so drop any deal
+    whose product/ingredient name mentions a requested term (e.g. 'beef')."""
     if count <= 0:
         return []
     hero = _hero_produce_iids()
+    terms = [t.lower() for t in (exclude_terms or [])]
+
+    def is_requested(d: DealCache) -> bool:
+        blob = f"{d.product_name or ''}".lower()
+        return any(t in blob for t in terms)
 
     def tier(d: DealCache) -> int:
         cat = (d.category or "").lower()
@@ -355,8 +390,10 @@ def _select_market_deals(
         d
         for d in all_deals
         if d.matched_ingredient_id is not None
+        and d.sale_price is not None  # a market pick must cite a real price
         and d.matched_ingredient_id not in pantry_iids
         and tier(d) < 9
+        and not is_requested(d)
     ]
     # Quality tier first, then higher savings within a tier.
     candidates.sort(
@@ -467,16 +504,85 @@ def _tier_plan_text(n: int, difficulties: list[str] | None = None) -> str:
     return ", ".join(f"{counts[t]} {t}" for t in _TIER_ORDER if counts.get(t))
 
 
-def _direction_block(direction: str | None) -> str:
+# Food/dish/protein words a counted direction can enumerate (Prompt 30). Used to
+# tell an enumerated "slot contract" ("one chicken, one beef, …") from a vibe
+# direction ("light + fast", "one pan only" — 'pan' is not a food).
+_FOOD_WORDS = {
+    "chicken", "beef", "pork", "fish", "salmon", "shrimp", "seafood", "cod",
+    "tuna", "tilapia", "steak", "lamb", "turkey", "tofu", "bean", "beans",
+    "egg", "eggs", "pasta", "noodle", "noodles", "rice", "pizza", "taco",
+    "tacos", "soup", "salad", "curry", "stew", "roast", "sandwich", "burger",
+    "burgers", "bowl", "stir", "stirfry", "veg", "vegetable", "vegetables",
+    "vegetarian", "veggie", "veggies", "vegan", "meatball", "meatballs",
+    "sausage", "duck", "scallop", "scallops", "crab", "lobster", "mussels",
+    "chili", "quesadilla", "wrap", "wraps", "risotto", "casserole", "bake",
+}
+_COUNT_WORDS = {
+    "one", "two", "three", "four", "five", "six", "seven", "eight",
+    "1", "2", "3", "4", "5", "6", "7", "8", "a", "an", "single",
+}
+
+
+def _direction_asks(direction: str | None) -> tuple[bool, int, list[str]]:
+    """Parse a direction for an enumerated SLOT CONTRACT (Prompt 30).
+
+    Returns (enumerated, ask_count, requested_terms). ``enumerated`` is True when
+    the direction names specific dishes/proteins with counts or as a list —
+    e.g. "one chicken, one beef, one pasta, one fish" or "one beef only". Vibe
+    directions ("grill something", "one pan only") return (False, 0, [])."""
+    d = (direction or "").strip().lower()
+    if not d:
+        return (False, 0, [])
+    tokens = re.findall(r"[a-z0-9]+", d)
+    tokenset = set(tokens)
+    counted: list[str] = []   # food words preceded (≤2 tokens) by a count word
+    foods: list[str] = []     # all distinct food words mentioned
+    for i, tok in enumerate(tokens):
+        if tok not in _FOOD_WORDS:
+            continue
+        if tok not in foods:
+            foods.append(tok)
+        window = tokens[max(0, i - 2):i]
+        if any(w in _COUNT_WORDS for w in window) and tok not in counted:
+            counted.append(tok)
+
+    # Explicit counts on ≥2 dishes, or a single counted dish with "only" (a cap),
+    # is a contract. Also a bare list of ≥2 foods separated by commas/"and".
+    if len(counted) >= 2 or (len(counted) == 1 and "only" in tokenset):
+        return (True, len(counted), counted)
+    listy = ("," in d) or (" and " in d) or len(foods) >= 3
+    if len(foods) >= 2 and listy:
+        return (True, len(foods), foods)
+    return (False, 0, [])
+
+
+def _direction_block(direction: str | None, enumerated: bool = False) -> str:
     d = (direction or "").strip()
     if not d:
         return ""
-    return (
-        f"\n\nThe user's DIRECTION for THIS batch: '{d}'. All three concepts should "
+    base = (
+        f"\n\nThe user's DIRECTION for THIS batch: '{d}'. Every concept should "
         "honor it. This steer ranks ABOVE their cuisine preferences, but it never "
         "overrides the hard constraints (allergies, excluded ingredients, the "
         "protein floor, or pinned items) — satisfy every one of those first, then "
         "shape the batch to the direction."
+    )
+    if not enumerated:
+        return base
+    return base + (
+        "\n\nThis direction ENUMERATES specific dishes/proteins/counts — treat it as "
+        "a SLOT CONTRACT, binding across the whole batch:\n"
+        "- Fill exactly the enumerated slots as specified. ONE concept may satisfy "
+        "two compatible asks (e.g. beef + pasta in a single dish) ONLY if you say so "
+        "explicitly in that concept's why_this_recipe.\n"
+        "- Stated counts are CAPS: 'one beef' means AT MOST one beef-anchored concept "
+        "in the entire batch, surplus slots included. Never exceed a stated count.\n"
+        "- SURPLUS slots (batch size > asks) must extend with COMPLEMENTARY, non-"
+        "conflicting concepts: a different take on a requested category that isn't "
+        "capped, a vegetable-forward dish, or a market pick in an UNREQUESTED "
+        "category. NEVER fall back to a capped anchor to fill a surplus slot.\n"
+        "- If the batch is SMALLER than the number of asks, honor as many as possible "
+        "and state which asks you dropped in the FIRST concept's why_this_recipe."
     )
 
 
@@ -1052,7 +1158,9 @@ def _profile_text(user: User, ctx: _Ctx) -> str:
     return "\n".join(lines) + ctx.taste_block + ctx.history_block
 
 
-def _needs_revision(review: dict, is_market: bool = False) -> bool:
+def _needs_revision(
+    review: dict, is_market: bool = False, enforce_contract: bool = False
+) -> bool:
     try:
         score = int(review.get("score"))
     except (TypeError, ValueError):
@@ -1065,6 +1173,10 @@ def _needs_revision(review: dict, is_market: bool = False) -> bool:
     # A market pick's anchor is an intentional purchase — a lone rubric-6
     # (pantry-realism) flag on it is expected, not a defect.
     hard_set = {1, 4, 5} if is_market else {1, 4, 5, 6}
+    # Prompt 30: with an enumerated direction, a PROFILE-FIT (rubric 7) fail is a
+    # slot-contract violation (a cap exceeded / undisclosed merge) — a hard fail.
+    if enforce_contract:
+        hard_set = hard_set | {7}
     hard = bool(fails & hard_set)
     return score < 7 or hard or review.get("verdict") == "revise"
 
@@ -1086,6 +1198,7 @@ async def _run_critic(
     profile_text: str,
     pantry_lines: str = "",
     market_idx: list[int] | None = None,
+    contract_note: str = "",
 ) -> list[dict]:
     briefs = [_concept_brief(c) for c in concepts]
     market_note = ""
@@ -1101,7 +1214,8 @@ async def _run_critic(
         f"DINER PROFILE:\n{profile_text}\n\n"
         f"THEIR PANTRY (with quantities — check rubric 6 against these numbers):\n"
         f"{pantry_lines or '- (unknown)'}\n"
-        f"{market_note}\n"
+        f"{market_note}"
+        f"{contract_note}\n"
         f"CONCEPTS (0-indexed):\n{json.dumps(briefs, ensure_ascii=False)}\n\n"
         "Review each concept now."
     )
@@ -1115,7 +1229,8 @@ async def _run_critic(
 
 
 async def _regen_concept(
-    client: AsyncAnthropic, concept: dict, review: dict, base_system: str, ctx_text: str
+    client: AsyncAnthropic, concept: dict, review: dict, base_system: str, ctx_text: str,
+    contract_hint: str = "",
 ) -> dict:
     issues = "; ".join(str(i) for i in (review.get("worst_issues") or [])) or (
         "quality below bar"
@@ -1130,6 +1245,7 @@ async def _regen_concept(
         f"('{tier}'). Use ONLY ingredients actually in their kitchen or on the deals "
         "list — never invent a protein or item the pantry doesn't show (the flagged "
         "issue above is usually exactly this)."
+        + contract_hint
     )
     prior = json.dumps(_concept_brief(concept), ensure_ascii=False)
     # Correction rides in the user message so the cached L1+L2 system prefix
@@ -1154,10 +1270,31 @@ async def _critique_and_fix(
     ctx_text: str,
     pantry_lines: str = "",
     market_idx: list[int] | None = None,
+    contract: tuple[bool, int, list[str]] | None = None,
 ) -> tuple[list[dict], list[dict]]:
     """Score concepts, regenerate weak ones once, return (concepts, critic_meta)."""
+    enumerated, ask_count, terms = contract or (False, 0, [])
+    contract_note = ""
+    contract_hint = ""
+    if enumerated:
+        contract_note = (
+            "\nSLOT CONTRACT (the direction ENUMERATES dishes/proteins/counts): under "
+            "rubric 7 (PROFILE FIT) verify the contract across the WHOLE batch — stated "
+            f"counts are CAPS ({', '.join(terms)} — at most one concept each), a single "
+            "concept may cover two asks ONLY if its why_this_recipe says so, and surplus "
+            "slots must be COMPLEMENTARY (not a repeat of a capped anchor). Any concept "
+            "that breaks a cap or is an undisclosed duplicate of a capped anchor FAILS "
+            "rubric 7; name the exceeded cap in worst_issues.\n"
+        )
+        contract_hint = (
+            "\n\nSLOT CONTRACT: this batch's direction caps these anchors: "
+            f"{', '.join(terms)} (at most one concept each). Your replacement must NOT "
+            "add another concept anchored on an already-satisfied capped item; make it a "
+            "complementary, non-conflicting dish (a different uncapped category, a "
+            "vegetable-forward dish, or an on-sale item in an unrequested category)."
+        )
     reviews = await _run_critic(
-        client, concepts, floor, profile_text, pantry_lines, market_idx
+        client, concepts, floor, profile_text, pantry_lines, market_idx, contract_note
     )
     market_set = set(market_idx or [])
     by_index: dict[int, dict] = {}
@@ -1171,12 +1308,15 @@ async def _critique_and_fix(
 
     regen_idx = [
         i for i in range(len(concepts))
-        if by_index.get(i) and _needs_revision(by_index[i], is_market=i in market_set)
+        if by_index.get(i)
+        and _needs_revision(by_index[i], is_market=i in market_set, enforce_contract=enumerated)
     ]
     if regen_idx:
         fixed = await asyncio.gather(
             *(
-                _regen_concept(client, concepts[i], by_index[i], base_system, ctx_text)
+                _regen_concept(
+                    client, concepts[i], by_index[i], base_system, ctx_text, contract_hint
+                )
                 for i in regen_idx
             ),
             return_exceptions=True,
@@ -1236,6 +1376,91 @@ async def _regen_for_variety(
     if isinstance(recs, list) and recs and isinstance(recs[0], dict):
         return recs[0]
     return concept
+
+
+def _concept_covers(concept: dict, term: str) -> bool:
+    """Does a concept anchor on / feature a requested term (e.g. 'beef')?"""
+    kis = " ".join(
+        str(k.get("generic_name") or "")
+        for k in (concept.get("key_ingredients") or [])
+        if isinstance(k, dict)
+    )
+    blob = (
+        f"{concept.get('anchor_ingredient') or ''} {concept.get('title') or ''} {kis}"
+    ).lower()
+    return term in blob
+
+
+async def _regen_for_contract(
+    client: AsyncAnthropic, concept: dict, terms: list[str], base_system: str, ctx_text: str
+) -> dict:
+    tier = (concept.get("difficulty") or "").strip() or "the same"
+    correction = (
+        "\n\nSLOT CONTRACT VIOLATION: this concept is a DUPLICATE of an already-filled "
+        f"capped ask. The direction caps each of {terms} at ONE concept in the batch, "
+        "and those are already used. Return ONE replacement concept as JSON "
+        '{"recipes":[{...same shape...}]} that is COMPLEMENTARY and does NOT anchor on '
+        f"or feature ANY of: {', '.join(terms)}. Prefer a vegetable-forward dish or an "
+        f"on-sale item in an unrequested category. Keep the SAME difficulty tier "
+        f"('{tier}'). Use ONLY pantry or on-sale items."
+    )
+    prior = json.dumps(_concept_brief(concept), ensure_ascii=False)
+    msg = f"{ctx_text}{correction}\n\nConcept to replace:\n{prior}\n\nReturn the replacement now."
+    data = await _call_json(
+        client, model=settings.recipe_model, max_tokens=_CONCEPT_MAX_TOKENS,
+        system=base_system, user_msg=msg, category="generation",
+    )
+    recs = data.get("recipes") if isinstance(data, dict) else None
+    if isinstance(recs, list) and recs and isinstance(recs[0], dict):
+        return recs[0]
+    return concept
+
+
+async def _enforce_slot_contract(
+    client: AsyncAnthropic,
+    concepts: list[dict],
+    terms: list[str],
+    ask_count: int,
+    base_system: str,
+    ctx_text: str,
+) -> list[dict]:
+    """Deterministic backstop for a counted direction (Prompt 30): the Haiku critic
+    is unreliable at counting, so enforce each stated count as a hard CAP of one —
+    keep the first concept covering a capped term, regenerate any others as
+    complementary non-conflicting dishes. Also disclose dropped asks when the batch
+    is smaller than the number of asks."""
+    if not terms:
+        return concepts
+    excess: list[int] = []
+    for term in terms:
+        covering = [i for i, c in enumerate(concepts) if _concept_covers(c, term)]
+        excess.extend(covering[1:])  # cap = 1: everything past the first is excess
+    excess = sorted(set(excess))
+    if excess:
+        fixed = await asyncio.gather(
+            *(_regen_for_contract(client, concepts[i], terms, base_system, ctx_text)
+              for i in excess),
+            return_exceptions=True,
+        )
+        for i, res in zip(excess, fixed):
+            if isinstance(res, dict):
+                concepts[i] = res
+        logger.info("Slot contract: regenerated %d over-cap concept(s): %s",
+                    len(excess), excess)
+
+    # Disclose dropped asks when the batch can't hold every ask (N < asks).
+    if concepts and len(concepts) < ask_count:
+        covered = {t for t in terms if any(_concept_covers(c, t) for c in concepts)}
+        dropped = [t for t in terms if t not in covered]
+        if dropped:
+            w = (concepts[0].get("why_this_recipe") or "").strip()
+            if not any(t in w.lower() for t in dropped):
+                note = (
+                    f"(Only {len(concepts)} slots for {ask_count} asks — dropped "
+                    f"{', '.join(dropped)} this batch.)"
+                )
+                concepts[0]["why_this_recipe"] = f"{w} {note}".strip()
+    return concepts
 
 
 async def _enforce_variety(
@@ -1329,15 +1554,26 @@ async def generate_concepts(
     n = _clamp_n(user.recipes_per_generation)
     tiers = _clean_difficulties(difficulties)
 
+    # Counted-direction SLOT CONTRACT (Prompt 30): an enumerated direction caps
+    # categories, so surplus market picks are limited to the leftover slots and
+    # must avoid the requested (capped) categories.
+    enumerated, ask_count, requested_terms = _direction_asks(ctx.direction)
+
     # Market picks (A1/A2): census the pantry's distinct viable anchors, convert
     # the surplus slots to deal-anchored picks, and select this batch's anchors
     # (rotating away from recent ones). Deals can LEAD, not just fill gaps.
     pantry_iids = set(ctx.pantry_by_iid.keys())
     census = _anchor_census(ctx.pantry, user.household_size or 2)
-    market_slots = _market_slot_count(n, len(census))
+    if enumerated:
+        # Only genuine SURPLUS slots (batch beyond the asks) become market picks,
+        # and they must land in UNREQUESTED categories.
+        market_slots = max(n - ask_count, 0)
+    else:
+        market_slots = _market_slot_count(n, len(census))
     recent_market = await _recent_market_anchors(db, user.id)
     ctx.market_deals = _select_market_deals(
-        ctx.all_deals, market_slots, recent_market, pantry_iids
+        ctx.all_deals, market_slots, recent_market, pantry_iids,
+        exclude_terms=requested_terms if enumerated else None,
     )
     market_iids = {d.matched_ingredient_id for d in ctx.market_deals}
     logger.info(
@@ -1365,7 +1601,7 @@ async def generate_concepts(
         f"Avoid repeating these recent titles: {_fmt_list(list(recent_titles))}."
         + ctx.variety_block
         + _market_block(ctx.market_deals, ctx.chain_name)
-        + _direction_block(ctx.direction)
+        + _direction_block(ctx.direction, enumerated)
         + ctx.pin_block
         + f"\n\nPropose tonight's {n} dinner concepts now."
     )
@@ -1393,11 +1629,18 @@ async def generate_concepts(
                 client, raw, ctx.protein_floor, _profile_text(user, ctx),
                 system_blocks, user_msg, _pantry_qty_lines(ctx.pantry),
                 market_idx=market_idx,
+                contract=(enumerated, ask_count, requested_terms),
             )
             # Variety guard: never re-serve a recent signature under a new name,
             # and keep the batch mutually distinct (each concept differs from
             # EVERY other on 2+ axes). Runs even with no history.
             raw = await _enforce_variety(client, raw, recent_sigs, system_blocks, user_msg)
+            # Slot-contract CAP backstop (Prompt 30): deterministic, has the final
+            # say — the critic is unreliable at counting caps across the batch.
+            if enumerated:
+                raw = await _enforce_slot_contract(
+                    client, raw, requested_terms, ask_count, system_blocks, user_msg
+                )
 
     persisted: list[Recipe] = []
     for r, critic in zip(raw, critics):

@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
+import { useToast } from "@/components/ui/Toast";
 import { currentWeekStart } from "@/lib/week";
 import {
   buildShoppingList,
@@ -84,6 +85,7 @@ function timeAgo(iso: string | null): string {
 
 export default function RecipesPage() {
   const router = useRouter();
+  const toast = useToast();
   const weekStart = useMemo(() => currentWeekStart(), []);
 
   const [week, setWeek] = useState<WeekResponse | null>(null);
@@ -201,7 +203,11 @@ export default function RecipesPage() {
         return prev;
       });
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Could not generate recipes.");
+      const msg = e instanceof Error ? e.message : "Could not generate recipes.";
+      setError(msg);
+      // A structured 500 carries an error id (surfaced in msg) — toast it with a
+      // retry so a dropped generation is never silent.
+      toast.error(msg, () => generate());
       // keep pins + direction on failure so the user can retry
     } finally {
       if (stepTimer.current) clearInterval(stepTimer.current);

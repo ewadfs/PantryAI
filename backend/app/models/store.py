@@ -5,6 +5,7 @@ from sqlalchemy import (
     Boolean,
     DateTime,
     ForeignKey,
+    Index,
     Integer,
     Numeric,
     String,
@@ -80,6 +81,13 @@ class UserStore(Base):
     __tablename__ = "user_stores"
     __table_args__ = (
         UniqueConstraint("user_id", "store_location_id", name="uq_user_store"),
+        # At most one default store per user — the DB forbids a second (P31).
+        Index(
+            "uq_user_stores_one_default",
+            "user_id",
+            unique=True,
+            postgresql_where=text("is_default"),
+        ),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)

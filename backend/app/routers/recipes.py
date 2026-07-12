@@ -1,5 +1,7 @@
 """Recipe generation, rating, and the This Week list."""
 
+import logging
+import uuid
 from datetime import date, datetime, timedelta, timezone
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
@@ -22,6 +24,8 @@ from app.schemas.recipe import (
 )
 from app.services import ingredient_matcher, recipe_engine
 from app.services.auth import get_current_user
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["recipes"])
 
@@ -64,7 +68,23 @@ async def generate(
             db, current_user, pinned, direction, difficulties
         )
     except ValueError as e:
+        # User-facing validation error (e.g. bad pinned ids) — keep the 400.
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+    except Exception as exc:  # noqa: BLE001 — any pipeline failure (incl. a dropped
+        # DB connection mid-generation) becomes a structured 500 with an error id
+        # the client can surface, instead of a silent connection drop (Prompt 31).
+        error_id = uuid.uuid4().hex[:8]
+        logger.exception(
+            "generate failed [error_id=%s] user=%s: %s",
+            error_id, current_user.id, exc,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail={
+                "message": "Recipe generation failed. Please try again.",
+                "error_id": error_id,
+            },
+        )
     reads = [
         RecipeRead.model_validate(recipe_engine.recipe_to_read(r)) for r in recipes
     ]

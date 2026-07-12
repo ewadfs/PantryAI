@@ -55,10 +55,20 @@ export async function apiFetch<T = unknown>(
   const payload = isJson ? await res.json().catch(() => null) : await res.text();
 
   if (!res.ok) {
-    const message =
-      (isJson && payload && (payload.detail || payload.message)) ||
-      `Request failed (${res.status})`;
-    throw new ApiError(res.status, String(message), payload);
+    let message = `Request failed (${res.status})`;
+    if (isJson && payload) {
+      // `detail` may be a string (FastAPI default) or a structured object
+      // ({message, error_id}) for wrapped 500s — surface the id if present.
+      const d = payload.detail ?? payload;
+      if (typeof d === "string") {
+        message = d;
+      } else if (d && typeof d === "object" && d.message) {
+        message = d.error_id ? `${d.message} (ref ${d.error_id})` : d.message;
+      } else if (typeof payload.message === "string") {
+        message = payload.message;
+      }
+    }
+    throw new ApiError(res.status, message, payload);
   }
 
   return payload as T;

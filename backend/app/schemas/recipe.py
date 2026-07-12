@@ -93,6 +93,15 @@ class GenerateRequest(BaseModel):
     # Ephemeral, per-batch steer ("grill something", "use the wok"). Applies only
     # to the batch it's typed for; does not carry into the next generation.
     direction: str | None = Field(default=None, max_length=200)
+    # Which difficulty tiers to draw from. Empty (or omitted) means all three.
+    difficulties: list[Literal["easy", "medium", "hard"]] = Field(default_factory=list)
+
+    @field_validator("difficulties")
+    @classmethod
+    def _dedupe(cls, v: list[str]) -> list[str]:
+        order = {"easy": 0, "medium": 1, "hard": 2}
+        seen = {d for d in v if d in order}
+        return sorted(seen, key=lambda d: order[d])
 
 
 class GenerateResponse(BaseModel):
@@ -104,6 +113,7 @@ class LatestResponse(BaseModel):
     store_name: str | None = None
     pinned: list[str] = Field(default_factory=list)
     direction: str | None = None
+    difficulties: list[str] = Field(default_factory=list)
     recipes: list[RecipeRead]
 
 

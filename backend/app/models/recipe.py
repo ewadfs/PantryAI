@@ -50,6 +50,9 @@ class Recipe(Base):
     pinned_items_json: Mapped[dict | list | None] = mapped_column(JSONB)
     # Ephemeral per-batch direction the user typed ("grill something").
     direction: Mapped[str | None] = mapped_column(String(200))
+    # Difficulty tiers this batch was drawn from (subset of easy/medium/hard).
+    # NULL means all three; persisted so warm-cache + /latest can reuse it.
+    difficulties: Mapped[list[str] | None] = mapped_column(ARRAY(Text))
     ai_model: Mapped[str | None] = mapped_column(String(50))
     # Critic pass (Stage 1.5): {score, worst_issues, verdict, fail_rubrics, regenerated}.
     critic_json: Mapped[dict | list | None] = mapped_column(JSONB)

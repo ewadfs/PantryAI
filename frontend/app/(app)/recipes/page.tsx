@@ -14,6 +14,7 @@ import {
   saveToWeek,
 } from "@/lib/recipeApi";
 import { getMyStores, setDefaultStore } from "@/lib/storesApi";
+import type { Difficulty } from "@/lib/recipeApi";
 import { getMe } from "@/lib/userApi";
 import { listPantry } from "@/lib/pantryApi";
 import type { UserStore } from "@/lib/listTypes";
@@ -36,6 +37,38 @@ const STEPS = [
 const TIER_RANK: Record<string, number> = { easy: 0, medium: 1, hard: 2 };
 function tierRank(d: string | null): number {
   return TIER_RANK[(d ?? "").toLowerCase()] ?? 3;
+}
+
+const ALL_TIERS: Difficulty[] = ["easy", "medium", "hard"];
+const DIFF_KEY = "pantryai:difficulties";
+
+function orderTiers(ds: Difficulty[]): Difficulty[] {
+  return ALL_TIERS.filter((t) => ds.includes(t));
+}
+
+function loadDifficulties(): Difficulty[] {
+  if (typeof window === "undefined") return ALL_TIERS;
+  try {
+    const raw = JSON.parse(localStorage.getItem(DIFF_KEY) || "[]");
+    const clean = orderTiers(
+      (Array.isArray(raw) ? raw : []).filter((d): d is Difficulty =>
+        ALL_TIERS.includes(d as Difficulty),
+      ),
+    );
+    return clean.length ? clean : ALL_TIERS;
+  } catch {
+    return ALL_TIERS;
+  }
+}
+
+/** Scope suffix for the batch label, null when all three tiers are in play. */
+function scopeLabel(ds: string[]): string | null {
+  const sel = orderTiers(ds.filter((d): d is Difficulty =>
+    ALL_TIERS.includes(d as Difficulty),
+  ));
+  if (sel.length === 0 || sel.length === 3) return null;
+  if (sel.length === 1) return `${sel[0]} only`;
+  return sel.join("+");
 }
 
 function timeAgo(iso: string | null): string {
@@ -76,12 +109,36 @@ export default function RecipesPage() {
   const [batchDirection, setBatchDirection] = useState<string | null>(null);
   const [lastDirection, setLastDirection] = useState("");
   const [perBatch, setPerBatch] = useState(5);
+  const [difficulties, setDifficulties] = useState<Difficulty[]>(ALL_TIERS);
+  const [batchDifficulties, setBatchDifficulties] = useState<string[]>([]);
   const stepTimer = useRef<ReturnType<typeof setInterval> | null>(null);
   const pollTimer = useRef<ReturnType<typeof setInterval> | null>(null);
   const directionRef = useRef("");
   useEffect(() => {
     directionRef.current = direction;
   }, [direction]);
+  const difficultiesRef = useRef<Difficulty[]>(ALL_TIERS);
+  useEffect(() => {
+    difficultiesRef.current = difficulties;
+  }, [difficulties]);
+
+  // Hydrate the tier selection from localStorage once on mount.
+  useEffect(() => {
+    setDifficulties(loadDifficulties());
+  }, []);
+
+  function toggleDifficulty(d: Difficulty) {
+    setDifficulties((prev) => {
+      const next = prev.includes(d)
+        ? prev.filter((x) => x !== d)
+        : orderTiers([...prev, d]);
+      const final = next.length ? next : prev; // never empty
+      if (typeof window !== "undefined") {
+        localStorage.setItem(DIFF_KEY, JSON.stringify(final));
+      }
+      return final;
+    });
+  }
 
   function selectTab(t: "discover" | "week") {
     setTab(t);
@@ -120,12 +177,18 @@ export default function RecipesPage() {
     );
     const activePins = pinsRef.current;
     const activeDirection = directionRef.current.trim();
+    const activeDiffs = difficultiesRef.current;
     try {
-      const res = await generateRecipes(activePins.map((p) => p.id), activeDirection);
+      const res = await generateRecipes(
+        activePins.map((p) => p.id),
+        activeDirection,
+        activeDiffs,
+      );
       setRecipes(res.recipes);
       setGeneratedAt(res.recipes[0]?.generated_at ?? new Date().toISOString());
       setBatchPins(activePins.map((p) => p.name));
       setBatchDirection(activeDirection || null);
+      setBatchDifficulties(activeDiffs.length === 3 ? [] : activeDiffs);
       setPins([]); // pins satisfied — clear them
       // Direction is ephemeral: clear the input, offer it back as a placeholder.
       if (activeDirection) setLastDirection(activeDirection);
@@ -155,6 +218,7 @@ export default function RecipesPage() {
         setBatchStore(res.store_name);
         setBatchPins(res.pinned ?? []);
         setBatchDirection(res.direction ?? null);
+        setBatchDifficulties(res.difficulties ?? []);
       }
     } catch {
       /* ignore — user can generate */
@@ -207,6 +271,7 @@ export default function RecipesPage() {
           setGeneratedAt(res.generated_at);
           setBatchStore(res.store_name);
           setBatchDirection(res.direction ?? null);
+          setBatchDifficulties(res.difficulties ?? []);
           if (pollTimer.current) clearInterval(pollTimer.current);
         }
       } catch {
@@ -361,6 +426,8 @@ export default function RecipesPage() {
   else if (batchStore) labelParts.push(`At ${batchStore}`);
   if (batchPins.length) labelParts.push(`built around: ${batchPins.join(", ")}`);
   if (batchDirection) labelParts.push(`direction: ‘${batchDirection}’`);
+  const scope = scopeLabel(batchDifficulties);
+  if (scope) labelParts.push(scope);
   const batchLabel = labelParts.join(" · ");
 
   return (
@@ -548,6 +615,8 @@ export default function RecipesPage() {
           generating={generating}
           stepText={STEPS[step]}
           lastDirection={lastDirection}
+          difficulties={difficulties}
+          onToggleDifficulty={toggleDifficulty}
         />
       )}
 

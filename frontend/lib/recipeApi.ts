@@ -8,12 +8,20 @@ import type {
   WeekResponse,
 } from "./recipeTypes";
 
-export const generateRecipes = (pinnedIds: number[] = [], direction?: string | null) =>
+export type Difficulty = "easy" | "medium" | "hard";
+
+export const generateRecipes = (
+  pinnedIds: number[] = [],
+  direction?: string | null,
+  difficulties: Difficulty[] = [],
+) =>
   apiFetch<GenerateResponse>("/api/v1/recipes/generate", {
     method: "POST",
     json: {
       pinned_pantry_item_ids: pinnedIds,
       ...(direction && direction.trim() ? { direction: direction.trim() } : {}),
+      // Omit when all three selected — server treats empty as "all".
+      ...(difficulties.length && difficulties.length < 3 ? { difficulties } : {}),
     },
   });
 

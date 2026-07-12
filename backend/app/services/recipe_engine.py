@@ -247,6 +247,15 @@ def _clamp_n(n: int | None) -> int:
     return n if n in _ALLOWED_N else 5
 
 
+def _clean_difficulties(difficulties: list[str] | None) -> list[str]:
+    """Normalize to an ordered, de-duped subset of easy/medium/hard.
+    Empty result means 'all three'."""
+    if not difficulties:
+        return []
+    seen = {d.strip().lower() for d in difficulties}
+    return [t for t in _TIER_ORDER if t in seen]
+
+
 def _tier_counts(n: int, difficulties: list[str] | None = None) -> dict[str, int]:
     """Split N across selected tiers as evenly as possible; remainder to the
     easiest selected tiers first. Default (no selection) = all three tiers."""
@@ -1047,8 +1056,14 @@ async def generate_concepts(
     user: User,
     pinned_ids: list[int] | None = None,
     direction: str | None = None,
+    difficulties: list[str] | None = None,
 ) -> list[Recipe]:
-    """One fast Claude call → N persisted concept recipes (status='concept')."""
+    """One fast Claude call → N persisted concept recipes (status='concept').
+
+    ``difficulties`` is a subset of {easy, medium, hard}; empty/None draws from
+    all three. N is split evenly across the selected tiers, remainder to the
+    easiest selected tier.
+    """
     pins = await _resolve_pins(db, user.id, pinned_ids or [])
     pin_dicts = _pin_dicts(pins)
     ctx = await _load_context(db, user)
@@ -1072,9 +1087,10 @@ async def generate_concepts(
     )
 
     n = _clamp_n(user.recipes_per_generation)
+    tiers = _clean_difficulties(difficulties)
     system = _CONCEPT_SYSTEM.format(
         n_concepts=n,
-        tier_plan=_tier_plan_text(n),
+        tier_plan=_tier_plan_text(n, tiers),
         allergies_excluded=(
             f"allergies={_fmt_list(user.allergies)}; "
             f"excluded={_fmt_list(user.excluded_ingredients)}"
@@ -1143,6 +1159,7 @@ async def generate_concepts(
             generated_store_name=ctx.store_name,
             pinned_items_json=pin_dicts or None,
             direction=ctx.direction or None,
+            difficulties=tiers or None,
             critic_json=critic or None,
             signature_json={
                 "anchor_ingredient": r.get("anchor_ingredient"),
@@ -1309,13 +1326,25 @@ async def run_details_bg(user_id: int, recipe_ids: list[int]) -> None:
         await db.commit()
 
 
+async def _last_difficulties(db: AsyncSession, user_id: int) -> list[str]:
+    """The difficulty selection from the user's most recent batch (for warm-cache)."""
+    row = await db.scalar(
+        select(Recipe.difficulties)
+        .where(Recipe.user_id == user_id)
+        .order_by(Recipe.generated_at.desc())
+        .limit(1)
+    )
+    return list(row) if row else []
+
+
 async def warm_generate(user_id: int) -> None:
     """Background: full two-stage generation so the Recipes tab is warm."""
     async with AsyncSessionLocal() as db:
         user = await db.get(User, user_id)
         if user is None:
             return
-        recipes = await generate_concepts(db, user)
+        difficulties = await _last_difficulties(db, user_id)
+        recipes = await generate_concepts(db, user, difficulties=difficulties)
         await db.commit()
         if recipes:
             ctx = await _load_context(db, user)

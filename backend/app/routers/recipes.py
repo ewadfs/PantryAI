@@ -51,16 +51,17 @@ async def generate(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> GenerateResponse:
-    """Stage 1: return 3 recipe concepts fast; Stage 2 details run in background.
+    """Stage 1: return N recipe concepts fast; Stage 2 details run in background.
 
     Optional ``pinned_pantry_item_ids`` forces every recipe to feature those
     (up to 3) pantry items.
     """
     pinned = payload.pinned_pantry_item_ids if payload else []
     direction = payload.direction if payload else None
+    difficulties = payload.difficulties if payload else []
     try:
         recipes = await recipe_engine.generate_concepts(
-            db, current_user, pinned, direction
+            db, current_user, pinned, direction, difficulties
         )
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
@@ -86,7 +87,10 @@ async def latest(
         .limit(1)
     )
     if newest is None:
-        return LatestResponse(generated_at=None, store_name=None, direction=None, recipes=[])
+        return LatestResponse(
+            generated_at=None, store_name=None, direction=None,
+            difficulties=[], recipes=[],
+        )
     rows = (
         (
             await db.execute(
@@ -108,11 +112,13 @@ async def latest(
         if isinstance(p, dict) and p.get("name")
     ] if rows else []
     direction = rows[0].direction if rows else None
+    difficulties = (rows[0].difficulties or []) if rows else []
     return LatestResponse(
         generated_at=newest,
         store_name=store_name,
         pinned=pinned,
         direction=direction,
+        difficulties=difficulties,
         recipes=[RecipeRead.model_validate(recipe_engine.recipe_to_read(r)) for r in rows],
     )
 

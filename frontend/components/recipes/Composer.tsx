@@ -1,6 +1,20 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import type { Difficulty } from "@/lib/recipeApi";
+
+const TIERS: { key: Difficulty; label: string }[] = [
+  { key: "easy", label: "Easy" },
+  { key: "medium", label: "Medium" },
+  { key: "hard", label: "Hard" },
+];
+
+// Tier colors: easy green, medium amber, hard red.
+const TIER_STYLE: Record<Difficulty, { on: string; off: string }> = {
+  easy: { on: "bg-brand text-white border-brand", off: "bg-surface text-brand-dark border-hairline" },
+  medium: { on: "bg-warn text-white border-warn", off: "bg-surface text-warn border-hairline" },
+  hard: { on: "bg-red-600 text-white border-red-600", off: "bg-surface text-red-600 border-hairline" },
+};
 
 const EXAMPLES = [
   "grill something…",
@@ -23,6 +37,8 @@ export default function Composer({
   generating,
   stepText,
   lastDirection,
+  difficulties,
+  onToggleDifficulty,
 }: {
   value: string;
   onChange: (v: string) => void;
@@ -30,7 +46,20 @@ export default function Composer({
   generating: boolean;
   stepText: string;
   lastDirection: string;
+  difficulties: Difficulty[];
+  onToggleDifficulty: (d: Difficulty) => void;
 }) {
+  // Transient shake when the user tries to turn off the last active tier.
+  const [shake, setShake] = useState<Difficulty | null>(null);
+  function toggle(d: Difficulty) {
+    const isOn = difficulties.includes(d);
+    if (isOn && difficulties.length <= 1) {
+      setShake(d);
+      window.setTimeout(() => setShake((s) => (s === d ? null : s)), 400);
+      return; // keep at least one tier on
+    }
+    onToggleDifficulty(d);
+  }
   // Rotate the placeholder through examples until the user has generated once.
   const [ex, setEx] = useState(0);
   useEffect(() => {
@@ -74,13 +103,33 @@ export default function Composer({
           {stepText}
         </div>
       ) : (
-        <form
-          onSubmit={(e) => {
-            e.preventDefault();
-            if (!generating) onGenerate();
-          }}
-          className="flex items-center gap-2"
-        >
+        <>
+          <div className="mb-2 flex items-center gap-2">
+            {TIERS.map(({ key, label }) => {
+              const on = difficulties.includes(key);
+              const st = TIER_STYLE[key];
+              return (
+                <button
+                  key={key}
+                  type="button"
+                  onClick={() => toggle(key)}
+                  aria-pressed={on}
+                  className={`h-8 flex-1 rounded-full border text-xs font-semibold transition active:scale-95 ${
+                    on ? st.on : st.off
+                  } ${shake === key ? "animate-shake" : ""}`}
+                >
+                  {label}
+                </button>
+              );
+            })}
+          </div>
+          <form
+            onSubmit={(e) => {
+              e.preventDefault();
+              if (!generating) onGenerate();
+            }}
+            className="flex items-center gap-2"
+          >
           <input
             value={value}
             onChange={(e) => onChange(e.target.value.slice(0, 200))}
@@ -92,10 +141,11 @@ export default function Composer({
             type="submit"
             disabled={generating}
             className="flex h-12 shrink-0 items-center gap-1 rounded-2xl bg-brand px-5 text-sm font-semibold text-white shadow-lg shadow-brand/25 transition active:scale-[.98] disabled:opacity-60"
-          >
-            ✨ Generate
-          </button>
-        </form>
+            >
+              ✨ Generate
+            </button>
+          </form>
+        </>
       )}
     </div>
   );

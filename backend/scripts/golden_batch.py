@@ -875,6 +875,8 @@ async def _seed_deals(db, slug: str, rows) -> tuple[int, int]:
             select(SupportedChain).where(SupportedChain.chain_slug == chain_slug)
         )
     ).scalar_one()
+    # Mirror production: these chains have working circular sources.
+    chain.deals_status = "active"
     await db.execute(delete(DealCache).where(DealCache.region_key == region_key))
     today = date.today()
     fetch = CircularFetch(
@@ -1332,16 +1334,30 @@ async def mini_checks() -> None:
         await db.commit()
 
         # (c) DEALS STARVATION -> anchor cap (the live all-beef regression).
-        # Wipe every golden flyer; the stub then proposes the exact all-beef
-        # batch from the field screenshots ("two axes changed") and the
-        # engine's one-anchor-one-dish cap must break it up.
+        # Wipe every golden flyer AND the fetch history (so the self-heal
+        # debounce doesn't suppress); the stub then proposes the exact
+        # all-beef batch from the field screenshots ("two axes changed") and
+        # the engine's one-anchor-one-dish cap must break it up.
+        golden_regions = [v[2] for v in STORES.values()]
         await db.execute(
-            delete(DealCache).where(
-                DealCache.region_key.in_([v[2] for v in STORES.values()])
+            delete(DealCache).where(DealCache.region_key.in_(golden_regions))
+        )
+        await db.execute(
+            delete(CircularFetch).where(
+                CircularFetch.region_key.in_(golden_regions)
             )
         )
         await db.commit()
-        concepts = await recipe_engine.generate_concepts(db, user)
+        # Capture the self-heal instead of fetching real flyers.
+        scheduled: list = []
+        real_hook = recipe_engine._schedule_deal_refresh
+        recipe_engine._schedule_deal_refresh = (
+            lambda combos, zip_code=None: scheduled.extend(combos)
+        )
+        try:
+            concepts = await recipe_engine.generate_concepts(db, user)
+        finally:
+            recipe_engine._schedule_deal_refresh = real_hook
         await db.commit()
         anchors = [
             str((r.signature_json or {}).get("anchor_ingredient") or "?")
@@ -1358,6 +1374,9 @@ async def mini_checks() -> None:
         titles = [r.title for r in concepts]
         over = recipe_engine._overused_title_words(titles)
         print(f"  title-word check: {'CLEAN' if not over else 'VIOLATION ' + str(sorted(over))}")
+        print(f"  self-heal: background circular refresh scheduled for "
+              f"{len(scheduled)} starved store(s) "
+              f"(the scheduler also sweeps every {settings.deals_refresh_hours}h)")
 
 
 async def main() -> None:

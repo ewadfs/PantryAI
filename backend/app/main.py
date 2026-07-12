@@ -1,3 +1,4 @@
+import asyncio
 import logging
 from contextlib import asynccontextmanager
 
@@ -6,14 +7,67 @@ from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
 
 from app.config import settings
-from app.database import engine
+from app.database import AsyncSessionLocal, engine
 from app.routers import auth, deals, pantry, prices, recipes, shopping, stats, stores
 
 logger = logging.getLogger(__name__)
 
+# Advisory-lock key so only ONE replica runs a refresh cycle at a time.
+_DEALS_REFRESH_LOCK = 0x0DEA15
+
+
+async def _deals_refresh_loop() -> None:
+    """Keep weekly flyers fresh: run the circular pipeline every
+    DEALS_REFRESH_HOURS. run_pipeline skips chain×regions whose fetch is
+    still valid, so a quiet cycle costs one cheap query per active combo.
+    A Postgres advisory lock keeps multi-replica deploys from double-fetching."""
+    from app.services.vision import CircularExtractor  # deferred: heavy import
+
+    while True:
+        try:
+            async with engine.connect() as lock_conn:
+                got = (
+                    await lock_conn.execute(
+                        text("SELECT pg_try_advisory_lock(:k)"),
+                        {"k": _DEALS_REFRESH_LOCK},
+                    )
+                ).scalar()
+                if got:
+                    try:
+                        async with AsyncSessionLocal() as db:
+                            results = await CircularExtractor().run_pipeline(db)
+                            await db.commit()
+                        by_status: dict[str, int] = {}
+                        for r in results:
+                            by_status[r.get("status", "?")] = (
+                                by_status.get(r.get("status", "?"), 0) + 1
+                            )
+                        logger.info("Deals refresh cycle: %s combos — %s",
+                                    len(results), by_status or "none active")
+                    finally:
+                        await lock_conn.execute(
+                            text("SELECT pg_advisory_unlock(:k)"),
+                            {"k": _DEALS_REFRESH_LOCK},
+                        )
+                else:
+                    logger.info("Deals refresh: another replica holds the lock; skipping cycle.")
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 — the loop must survive bad cycles
+            logger.exception("Deals refresh cycle failed; retrying next cycle.")
+        await asyncio.sleep(max(1, settings.deals_refresh_hours) * 3600)
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # App loggers must actually reach stdout: uvicorn configures only its own
+    # loggers, so without this the engine's INFO telemetry (prompt audits,
+    # market-pool starvation, scheduler cycles) was silently dropped.
+    if not logging.getLogger().handlers:
+        logging.basicConfig(
+            level=logging.INFO,
+            format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+        )
     # Startup: verify the database connection is reachable.
     async with engine.begin() as conn:
         await conn.execute(text("SELECT 1"))
@@ -29,8 +83,19 @@ async def lifespan(app: FastAPI):
             "are Haiku-safe.",
             settings.recipe_model,
         )
+    refresh_task: asyncio.Task | None = None
+    if settings.deals_refresh_enabled:
+        refresh_task = asyncio.create_task(_deals_refresh_loop())
+        logger.info("Deals refresh scheduler started (every %dh).",
+                    settings.deals_refresh_hours)
     yield
-    # Shutdown: dispose of the connection pool.
+    # Shutdown: stop the scheduler, then dispose of the connection pool.
+    if refresh_task is not None:
+        refresh_task.cancel()
+        try:
+            await refresh_task
+        except asyncio.CancelledError:
+            pass
     await engine.dispose()
 
 

@@ -24,7 +24,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.database import AsyncSessionLocal
-from app.models.deal import DealCache
+from app.models.deal import CircularFetch, DealCache
 from app.models.pantry import PantryItem
 from app.models.recipe import Recipe, WeekRecipe
 from app.models.store import StoreLocation, SupportedChain, UserStore
@@ -270,6 +270,59 @@ async def _saved_stores(db: AsyncSession, user_id: int) -> list:
         seen.add(k)
         deduped.append(r)
     return deduped
+
+
+# Don't re-attempt a circular fetch for a starved combo more often than this —
+# a broken source would otherwise be hammered on every generation press.
+_REFRESH_DEBOUNCE_HOURS = 6
+
+
+async def _stale_deal_combos(db: AsyncSession, starved_stores: list) -> list[tuple[int, str | None]]:
+    """Saved chain×regions whose deal cache is EMPTY, whose chain can actually
+    be fetched, and with no fetch attempt in the debounce window. These get a
+    background circular refresh so the flyer cache self-heals instead of
+    silently starving the market-anchor pool until someone hits /deals/refresh."""
+    combos: list[tuple[int, str | None]] = []
+    cutoff = _now() - timedelta(hours=_REFRESH_DEBOUNCE_HOURS)
+    for s in starved_stores:
+        chain = await db.get(SupportedChain, s.chain_id)
+        if chain is None or (chain.deals_status != "active" and not chain.source_url):
+            continue  # pending-source chains log demand elsewhere; don't spam
+        scope = (
+            CircularFetch.region_key == s.region_key
+            if s.region_key is not None
+            else CircularFetch.chain_id == s.chain_id
+        )
+        attempted = await db.scalar(
+            select(CircularFetch.id)
+            .where(scope, CircularFetch.fetched_at >= cutoff)
+            .limit(1)
+        )
+        if attempted is None:
+            combos.append((s.chain_id, s.region_key))
+    return combos
+
+
+def _schedule_deal_refresh(
+    combos: list[tuple[int, str | None]], zip_code: str | None = None
+) -> None:
+    """Fire-and-forget background circular refreshes for starved combos.
+    Module-level hook so tests/fixtures can capture instead of fetching."""
+    if not combos:
+        return
+    from app.services import vision  # deferred: heavy module
+
+    for chain_id, region_key in combos:
+        try:
+            asyncio.get_running_loop().create_task(
+                vision.activate_region_bg(chain_id, region_key, zip_code)
+            )
+            logger.warning(
+                "Deal cache empty for chain=%s region=%s — scheduled a "
+                "background circular refresh (self-heal).", chain_id, region_key,
+            )
+        except RuntimeError:  # no running loop (sync scripts) — skip quietly
+            return
 
 
 async def _all_current_deals(
@@ -1441,6 +1494,9 @@ class _Ctx:
     # planned shared purchases).
     overlap_pool: list[_OverlapEntry] = field(default_factory=list)
     overlap_carveout: set[str] = field(default_factory=set)
+    # Saved chain×regions with NO current deals and no recent fetch attempt —
+    # generation self-heals by scheduling a background circular refresh.
+    stale_deal_combos: list[tuple[int, str | None]] = field(default_factory=list)
 
 
 async def _resolve_pins(
@@ -1522,10 +1578,14 @@ async def _load_context(db: AsyncSession, user: User) -> _Ctx:
     )
     # Other saved stores' deals: the sparse-store fallback anchor pool (P32 #4).
     other_store_deals: list[tuple[str | None, list[DealCache]]] = []
+    starved_stores = [] if (all_deals or default is None) else [default]
     for s in stores[1:]:
         deals_s = await _all_current_deals(db, s.chain_id, today, s.region_key)
         if deals_s:
             other_store_deals.append((s.chain_name, deals_s))
+        else:
+            starved_stores.append(s)
+    stale_combos = await _stale_deal_combos(db, starved_stores)
     deal_by_ingredient: dict[int, DealCache] = {}
     for d in all_deals:
         iid = d.matched_ingredient_id
@@ -1558,6 +1618,7 @@ async def _load_context(db: AsyncSession, user: User) -> _Ctx:
         pantry_by_norm=pantry_by_norm,
         all_deals=list(all_deals),
         other_store_deals=other_store_deals,
+        stale_deal_combos=stale_combos,
     )
 
 
@@ -2686,6 +2747,10 @@ async def generate_concepts(
     pins = await _resolve_pins(db, user.id, pinned_ids or [])
     pin_dicts = _pin_dicts(pins)
     ctx = await _load_context(db, user)
+    # Self-heal a starved flyer cache (the all-beef feed regression): schedule
+    # background refreshes for saved stores with no current deals, so this
+    # batch may run deal-less but the next one won't.
+    _schedule_deal_refresh(ctx.stale_deal_combos, user.zip_code)
     ctx.pin_block = _pin_block(pin_dicts)
     ctx.direction = (direction or "").strip()
     ctx.history_block, ctx.variety_block, recent_sigs = await _build_taste_history(

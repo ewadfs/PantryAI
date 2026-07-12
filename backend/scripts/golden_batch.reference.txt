@@ -163,4 +163,5 @@ deals starved @ N=5 (flyers wiped; stub proposes the live ALL-BEEF batch — 5×
   anchors shipped: ['ground beef', 'rigatoni', 'canned black beans', 'baby potatoes', 'broccoli']
   beef-anchored: 1 (one anchor, one dish); anchors distinct: YES; market picks: 0
   title-word check: CLEAN
+  self-heal: background circular refresh scheduled for 2 starved store(s) (the scheduler also sweeps every 6h)
 

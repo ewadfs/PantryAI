@@ -80,6 +80,14 @@ class Settings(BaseSettings):
     # in production except while auditing (Prompt 32 A2).
     log_prompts: bool = False
 
+    # Weekly-flyer freshness. The in-app scheduler re-runs the circular
+    # pipeline every N hours (it skips chain×regions whose fetch is still
+    # valid, so quiet cycles are nearly free). Before this existed, nothing
+    # drove the "cron entry" — flyers silently expired, the market-anchor
+    # pool starved, and whole batches collapsed onto one pantry anchor.
+    deals_refresh_enabled: bool = True
+    deals_refresh_hours: int = 6
+
     # CORS — comma-separated *extra* origins, merged with _DEFAULT_CORS_ORIGINS.
     # A bare "*" is ignored because it cannot be combined with credentials.
     cors_origins: str = ""

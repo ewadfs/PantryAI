@@ -12,10 +12,17 @@ export type ScanItem = {
   estimated_expiry: string | null;
 };
 
+export type UncertainItem = {
+  description: string;
+  guesses: string[];
+  crop_url: string | null;
+  full_photo: boolean;
+};
+
 export type ScanResponse = {
   scan_id: number;
   items: ScanItem[];
-  uncertain: string[];
+  uncertain: UncertainItem[];
   photo_count: number;
 };
 

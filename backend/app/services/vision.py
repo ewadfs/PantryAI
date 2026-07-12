@@ -13,9 +13,11 @@ import json
 import re
 from datetime import date, timedelta
 from decimal import Decimal, InvalidOperation
+from io import BytesIO
 from typing import Any
 
 from anthropic import AsyncAnthropic
+from PIL import Image
 from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -42,28 +44,43 @@ beverages, condiments, snacks, other
 - freshness: one of "fresh", "good", "use_soon" based on visual cues (wilting, \
 browning, near-empty) — default "good" if you cannot tell
 - confidence: a number from 0.0 to 1.0 for how sure you are about this item
+- region: [x0, y0, x1, y1] as normalized 0-1 coordinates of the item's bounding \
+area in THIS photo (x0,y0 = top-left corner, x1,y1 = bottom-right). Approximate \
+is fine; err generous (a slightly larger box) rather than tight.
 
 Rules:
 - Only report items you can actually see. Do not invent items.
-- If you are unsure what an item is, put a short description in the "uncertain" \
-list instead of guessing in "items".
 - Group obviously identical items into one entry with a combined quantity.
 - NEVER emit generic placeholder items like "produce in crisper drawer" or \
 "meat (cooked, in tray)". Either identify the specific ingredient(s) or route a \
 short description to the "uncertain" list.
-- Prepared/cooked leftovers and unidentifiable bottles or containers belong in \
-"uncertain", not "items".
+- Prepared/cooked leftovers and unidentifiable bottles or containers may go in \
+"uncertain" IF they are clearly food.
 - Single-serve impulse beverages (soda cans, bottled coffee drinks, energy \
 drinks) are low recipe value: still include them, but set category="beverages" \
 and a low, honest confidence.
+
+UNCERTAIN entries — be sparing and useful. Only emit one when you can offer at \
+least one plausible FOOD guess, OR the item is clearly food but unreadable. Do \
+NOT emit uncertain entries for opaque packaging, stacked boxes, or containers \
+with no visible food evidence — omit those entirely. Non-food household items \
+are either confidently identified (e.g. "Ziploc bags", "paper towels" in items) \
+or omitted; NEVER put non-food in uncertain. Each uncertain entry has:
+- description: a short phrase for what you see (e.g. "clear tub of red sauce")
+- guesses: 1-3 plausible specific food names as quick picks (e.g. ["marinara", \
+"tomato soup"]); [] only if truly clueless but it's obviously food
+- region: [x0, y0, x1, y1] normalized 0-1 box for the item, same rules as above
 
 Return ONLY a JSON object (no markdown, no prose) with this exact shape:
 {
   "items": [
     {"name": "...", "quantity_estimate": "...", "unit": "...", \
-"category": "...", "freshness": "...", "confidence": 0.0}
+"category": "...", "freshness": "...", "confidence": 0.0, \
+"region": [0.0, 0.0, 0.0, 0.0]}
   ],
-  "uncertain": ["short description of anything you couldn't identify"],
+  "uncertain": [
+    {"description": "...", "guesses": ["..."], "region": [0.0, 0.0, 0.0, 0.0]}
+  ],
   "photo_quality": "good | fair | poor",
   "photo_zone": "fridge | freezer | pantry | counter | unknown"
 }"""
@@ -119,7 +136,7 @@ class PantryScanner:
         for _ in range(2):
             message = await self._client.messages.create(
                 model=settings.vision_model,
-                max_tokens=2000,
+                max_tokens=3000,
                 messages=[
                     {
                         "role": "user",
@@ -157,6 +174,53 @@ class PantryScanner:
             "photo_zone": "unknown",
             "_parse_error": str(last_exc),
         }
+
+
+_CROP_PAD = 0.15         # pad the box 15% of its size on each side
+_CROP_LONGEST_EDGE = 320
+_CROP_JPEG_QUALITY = 70
+
+
+def _valid_region(region: Any) -> tuple[float, float, float, float] | None:
+    """Validate a normalized [x0,y0,x1,y1] box; return it clamped, or None."""
+    if not isinstance(region, (list, tuple)) or len(region) != 4:
+        return None
+    try:
+        x0, y0, x1, y1 = (float(v) for v in region)
+    except (TypeError, ValueError):
+        return None
+    if x1 < x0:
+        x0, x1 = x1, x0
+    if y1 < y0:
+        y0, y1 = y1, y0
+    # Reject degenerate / out-of-range boxes.
+    if not (0.0 <= x0 < x1 <= 1.0 and 0.0 <= y0 < y1 <= 1.0):
+        # Allow a little overshoot, then clamp.
+        x0, y0 = max(0.0, x0), max(0.0, y0)
+        x1, y1 = min(1.0, x1), min(1.0, y1)
+        if x1 - x0 < 0.01 or y1 - y0 < 0.01:
+            return None
+    return (x0, y0, x1, y1)
+
+
+def _make_crop(image_bytes: bytes, region: tuple[float, float, float, float]) -> bytes:
+    """Crop ``region`` from the image (padded ~15%), downscale, JPEG-encode."""
+    img = Image.open(BytesIO(image_bytes))
+    if img.mode not in ("RGB", "L"):
+        img = img.convert("RGB")
+    w, h = img.size
+    x0, y0, x1, y1 = region
+    bw, bh = (x1 - x0), (y1 - y0)
+    px0 = max(0.0, x0 - bw * _CROP_PAD)
+    py0 = max(0.0, y0 - bh * _CROP_PAD)
+    px1 = min(1.0, x1 + bw * _CROP_PAD)
+    py1 = min(1.0, y1 + bh * _CROP_PAD)
+    box = (int(px0 * w), int(py0 * h), int(px1 * w), int(py1 * h))
+    crop = img.crop(box)
+    crop.thumbnail((_CROP_LONGEST_EDGE, _CROP_LONGEST_EDGE))
+    buf = BytesIO()
+    crop.convert("RGB").save(buf, format="JPEG", quality=_CROP_JPEG_QUALITY)
+    return buf.getvalue()
 
 
 def _quantity_value(quantity_estimate: str | None) -> float:
@@ -237,11 +301,29 @@ async def process_pantry_scan(
 
     per_photo = await asyncio.gather(*(_scan(img) for img in images))
 
-    # 4. Merge across photos.
+    # 4. Merge items; collect uncertain entries tagged with their photo index.
     items = _merge_items(per_photo)
-    uncertain: list[str] = []
-    for payload in per_photo:
-        uncertain.extend(payload.get("uncertain", []))
+    uncertain_raw: list[dict] = []
+    for photo_idx, payload in enumerate(per_photo):
+        for u in payload.get("uncertain", []):
+            if isinstance(u, str):
+                entry = {"description": u, "guesses": [], "region": None}
+            elif isinstance(u, dict):
+                entry = {
+                    "description": (
+                        u.get("description") or u.get("name") or "Unidentified item"
+                    ),
+                    "guesses": [
+                        str(g).strip()
+                        for g in (u.get("guesses") or [])
+                        if str(g).strip()
+                    ][:3],
+                    "region": u.get("region"),
+                }
+            else:
+                continue
+            entry["photo_index"] = photo_idx
+            uncertain_raw.append(entry)
 
     # 5. Fuzzy-match ingredients and (6) estimate expiries.
     await ingredient_matcher.preload(db)
@@ -264,13 +346,18 @@ async def process_pantry_scan(
                 expiry = (today + timedelta(days=days)).isoformat()
         item["estimated_expiry"] = expiry
 
-    # 7. Persist scan metadata.
+    # 6.5 Server-side crops for each uncertain entry (+ short-lived GET URLs).
+    uncertain = await _crop_uncertain(user_id, scan.id, images, keys, uncertain_raw)
+
+    # 7. Persist scan metadata. Store crop keys (not the expiring URLs).
     scan.image_keys = keys
     scan.items_detected = len(items)
     scan.ai_response_json = {
         "photos": per_photo,
         "merged_items": items,
-        "uncertain": uncertain,
+        "uncertain": [
+            {k: v for k, v in u.items() if k != "crop_url"} for u in uncertain
+        ],
     }
     await db.flush()
 
@@ -280,6 +367,54 @@ async def process_pantry_scan(
         "uncertain": uncertain,
         "photo_count": len(images),
     }
+
+
+async def _crop_uncertain(
+    user_id: int,
+    scan_id: int,
+    images: list[bytes],
+    keys: list[str],
+    uncertain_raw: list[dict],
+) -> list[dict]:
+    """Crop each uncertain item server-side and return presigned GET URLs.
+
+    Missing/invalid region → presign the full source photo instead and flag
+    ``full_photo``. A crop failure never sinks the scan.
+    """
+
+    async def _one(n: int, u: dict) -> dict:
+        photo_idx = u.get("photo_index", 0)
+        if not (0 <= photo_idx < len(images)):
+            photo_idx = 0
+        region = _valid_region(u.get("region"))
+        full_photo = False
+        crop_key: str | None = None
+        url: str | None = None
+        try:
+            if region is not None:
+                crop_bytes = await asyncio.to_thread(_make_crop, images[photo_idx], region)
+                crop_key = f"pantry/{user_id}/{scan_id}/crops/{n}.jpg"
+                await storage.upload_image(crop_bytes, crop_key)
+                url = await storage.presign_get(crop_key, 600)
+            else:
+                full_photo = True
+                url = await storage.presign_get(keys[photo_idx], 600)
+        except Exception:  # noqa: BLE001 - crops are best-effort, fall back to full photo
+            full_photo = True
+            crop_key = None
+            try:
+                url = await storage.presign_get(keys[photo_idx], 600)
+            except Exception:  # noqa: BLE001
+                url = None
+        return {
+            "description": u["description"],
+            "guesses": u.get("guesses", []),
+            "crop_url": url,
+            "full_photo": full_photo,
+            "crop_key": crop_key,
+        }
+
+    return list(await asyncio.gather(*(_one(n, u) for n, u in enumerate(uncertain_raw))))
 
 
 # ---------------------------------------------------------------------------

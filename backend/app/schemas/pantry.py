@@ -18,10 +18,19 @@ class ScanItem(BaseModel):
     estimated_expiry: str | None = None
 
 
+class UncertainItem(BaseModel):
+    """An item the vision model couldn't confidently identify, with a crop."""
+
+    description: str
+    guesses: list[str] = Field(default_factory=list)
+    crop_url: str | None = None
+    full_photo: bool = False
+
+
 class ScanResponse(BaseModel):
     scan_id: int
     items: list[ScanItem]
-    uncertain: list[str] = Field(default_factory=list)
+    uncertain: list[UncertainItem] = Field(default_factory=list)
     photo_count: int
 
 

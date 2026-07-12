@@ -10,11 +10,12 @@ import {
   guessCategory,
   suggestItems,
 } from "@/lib/categories";
-import type { ConfirmItem, ScanResponse } from "@/lib/types";
+import type { ConfirmItem, ScanResponse, UncertainItem } from "@/lib/types";
 
 type Step = "capture" | "analyzing" | "review" | "success";
 type Photo = { id: string; file: File; url: string };
 type ReviewItem = ConfirmItem & { id: string; freshness: string };
+type ReviewUncertain = UncertainItem & { id: string };
 
 const MAX_PHOTOS = 6;
 
@@ -41,7 +42,8 @@ export default function ScanPage() {
 
   const [scanId, setScanId] = useState<number | null>(null);
   const [items, setItems] = useState<ReviewItem[]>([]);
-  const [uncertain, setUncertain] = useState<string[]>([]);
+  const [uncertain, setUncertain] = useState<ReviewUncertain[]>([]);
+  const [zoomUrl, setZoomUrl] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [savedCount, setSavedCount] = useState(0);
   const [mode, setMode] = useState<"replace" | "merge">("merge");
@@ -126,7 +128,13 @@ export default function ScanPage() {
           freshness: it.freshness ?? "good",
         })),
       );
-      setUncertain(res.uncertain ?? []);
+      // Cards WITH guesses (a real guess) sort first; pure-mystery last.
+      const mapped: ReviewUncertain[] = (res.uncertain ?? []).map((u) => ({
+        ...u,
+        id: uid(),
+      }));
+      mapped.sort((a, b) => (b.guesses.length > 0 ? 1 : 0) - (a.guesses.length > 0 ? 1 : 0));
+      setUncertain(mapped);
       setStep("review");
     } catch (e) {
       setError(e instanceof Error ? e.message : "Something went wrong.");
@@ -148,8 +156,11 @@ export default function ScanPage() {
       ...prev,
     ]);
   }
-  function dismissUncertain(desc: string) {
-    setUncertain((prev) => prev.filter((d) => d !== desc));
+  function dismissUncertain(id: string) {
+    setUncertain((prev) => prev.filter((u) => u.id !== id));
+  }
+  function dismissAllUncertain() {
+    setUncertain([]);
   }
 
   async function save() {
@@ -225,6 +236,8 @@ export default function ScanPage() {
           onRemove={removeItem}
           onAdd={addItem}
           onDismissUncertain={dismissUncertain}
+          onDismissAllUncertain={dismissAllUncertain}
+          onZoom={setZoomUrl}
           onSave={save}
           itemCount={items.length}
           mode={mode}
@@ -233,6 +246,21 @@ export default function ScanPage() {
       )}
 
       {step === "success" && <SuccessStep count={savedCount} />}
+
+      {zoomUrl && (
+        <button
+          aria-label="Close image"
+          onClick={() => setZoomUrl(null)}
+          className="fixed inset-0 z-50 flex items-center justify-center bg-ink/80 p-6"
+        >
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img
+            src={zoomUrl}
+            alt="Item close-up"
+            className="max-h-[80vh] max-w-full rounded-2xl object-contain"
+          />
+        </button>
+      )}
     </div>
   );
 }
@@ -394,24 +422,29 @@ function ReviewStep({
   onRemove,
   onAdd,
   onDismissUncertain,
+  onDismissAllUncertain,
+  onZoom,
   onSave,
   itemCount,
   mode,
   onModeChange,
 }: {
   grouped: [string, ReviewItem[]][];
-  uncertain: string[];
+  uncertain: ReviewUncertain[];
   saving: boolean;
   error: string | null;
   onUpdate: (id: string, patch: Partial<ReviewItem>) => void;
   onRemove: (id: string) => void;
   onAdd: (name: string, category?: string) => void;
-  onDismissUncertain: (desc: string) => void;
+  onDismissUncertain: (id: string) => void;
+  onDismissAllUncertain: () => void;
+  onZoom: (url: string) => void;
   onSave: () => void;
   itemCount: number;
   mode: "replace" | "merge";
   onModeChange: (m: "replace" | "merge") => void;
 }) {
+  const [uncertainOpen, setUncertainOpen] = useState(false);
   return (
     <div className="pb-28">
       <h1 className="text-2xl font-bold text-ink">Review your kitchen</h1>
@@ -448,22 +481,41 @@ function ReviewStep({
 
       {uncertain.length > 0 && (
         <section className="mt-6">
-          <h2 className="mb-2 px-1 text-xs font-semibold uppercase tracking-wide text-ink-faint">
-            Not sure about these
-          </h2>
-          <div className="flex flex-col gap-2">
-            {uncertain.map((desc) => (
-              <UncertainCard
-                key={desc}
-                desc={desc}
-                onPick={(name) => {
-                  onAdd(name);
-                  onDismissUncertain(desc);
-                }}
-                onDismiss={() => onDismissUncertain(desc)}
-              />
-            ))}
-          </div>
+          <button
+            onClick={() => setUncertainOpen((v) => !v)}
+            className="flex w-full items-center justify-between rounded-2xl border border-hairline bg-surface px-4 py-3 text-left active:scale-[.99]"
+          >
+            <span className="text-sm font-medium text-ink">
+              🔍 {uncertain.length} thing{uncertain.length === 1 ? "" : "s"} we couldn&apos;t
+              identify — review <span className="text-ink-faint">(optional)</span>
+            </span>
+            <span className={`text-ink-faint transition ${uncertainOpen ? "rotate-180" : ""}`}>
+              ▾
+            </span>
+          </button>
+
+          {uncertainOpen && (
+            <div className="mt-2 flex flex-col gap-2">
+              {uncertain.map((u) => (
+                <UncertainCard
+                  key={u.id}
+                  item={u}
+                  onPick={(name) => {
+                    onAdd(name);
+                    onDismissUncertain(u.id);
+                  }}
+                  onDismiss={() => onDismissUncertain(u.id)}
+                  onZoom={onZoom}
+                />
+              ))}
+              <button
+                onClick={onDismissAllUncertain}
+                className="mt-1 self-center text-sm font-medium text-ink-soft underline underline-offset-2"
+              >
+                Dismiss all remaining
+              </button>
+            </div>
+          )}
         </section>
       )}
 
@@ -584,22 +636,42 @@ function ReviewRow({
 }
 
 function UncertainCard({
-  desc,
+  item,
   onPick,
   onDismiss,
+  onZoom,
 }: {
-  desc: string;
+  item: ReviewUncertain;
   onPick: (name: string) => void;
   onDismiss: () => void;
+  onZoom: (url: string) => void;
 }) {
   const [typing, setTyping] = useState(false);
   const [text, setText] = useState("");
-  const chips = useMemo(() => chipsFromUncertain(desc), [desc]);
   return (
     <div className="rounded-2xl border border-hairline bg-surface p-4">
-      <p className="text-sm text-ink">{desc}</p>
+      {item.crop_url && (
+        <button
+          onClick={() => onZoom(item.crop_url!)}
+          className="mb-3 block w-full overflow-hidden rounded-xl bg-canvas active:scale-[.99]"
+          aria-label="Enlarge photo"
+        >
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img
+            src={item.crop_url}
+            alt={item.description}
+            className="h-24 w-full object-cover"
+          />
+        </button>
+      )}
+      <p className="text-sm text-ink-soft">
+        {item.description}
+        {item.full_photo && (
+          <span className="ml-1 text-xs text-ink-faint">(full photo)</span>
+        )}
+      </p>
       <div className="mt-3 flex flex-wrap items-center gap-2">
-        {chips.map((c) => (
+        {item.guesses.map((c) => (
           <button
             key={c}
             onClick={() => onPick(c)}
@@ -792,18 +864,4 @@ function groupByCategory(items: ReviewItem[]): [string, ReviewItem[]][] {
   return [...map.entries()].sort(
     (a, b) => order.indexOf(a[0] as never) - order.indexOf(b[0] as never),
   );
-}
-
-function chipsFromUncertain(desc: string): string[] {
-  const tail = desc.includes(" - ") ? desc.split(" - ").slice(1).join(" - ") : desc;
-  const m = tail.match(/(?:possibly|maybe|could be|likely|probably)\s+(.+)/i);
-  const cand = (m ? m[1] : tail).replace(/[.?!]/g, "");
-  if (/\bor\b/i.test(cand)) {
-    return cand
-      .split(/\bor\b/i)
-      .map((s) => s.trim())
-      .filter((s) => s.length > 0 && s.length < 30)
-      .slice(0, 3);
-  }
-  return [];
 }

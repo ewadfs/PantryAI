@@ -74,3 +74,20 @@ async def get_image_bytes(key: str) -> bytes:
         return resp["Body"].read()
 
     return await asyncio.to_thread(_get)
+
+
+async def presign_get(key: str, expires_seconds: int = 600) -> str:
+    """Return a short-lived presigned GET URL for a private R2 object.
+
+    Used to hand the client a temporary, read-only link to an uncertain-item
+    crop without making the bucket public. Default TTL 10 minutes.
+    """
+
+    def _sign() -> str:
+        return _get_client().generate_presigned_url(
+            "get_object",
+            Params={"Bucket": settings.r2_bucket, "Key": key},
+            ExpiresIn=expires_seconds,
+        )
+
+    return await asyncio.to_thread(_sign)

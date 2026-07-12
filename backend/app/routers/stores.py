@@ -18,7 +18,10 @@ from app.services.vision import activate_region_bg
 
 router = APIRouter(prefix="/stores", tags=["stores"])
 
-MAX_STORES = 5
+# Raised 5→10 (Prompt 24-lite v2): the live user saves 5 regional/international
+# banners (Aldi, Whole Foods, Stop & Shop, H Mart, Patel Brothers) alongside
+# their existing stores, which the old cap of 5 blocked.
+MAX_STORES = 10
 
 
 async def _activate_store_deals(

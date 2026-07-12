@@ -48,6 +48,8 @@ class Recipe(Base):
     generated_store_name: Mapped[str | None] = mapped_column(String(200))
     # Pinned pantry items this batch was built around ("cook with this").
     pinned_items_json: Mapped[dict | list | None] = mapped_column(JSONB)
+    # Ephemeral per-batch direction the user typed ("grill something").
+    direction: Mapped[str | None] = mapped_column(String(200))
     ai_model: Mapped[str | None] = mapped_column(String(50))
     # Critic pass (Stage 1.5): {score, worst_issues, verdict, fail_rubrics, regenerated}.
     critic_json: Mapped[dict | list | None] = mapped_column(JSONB)

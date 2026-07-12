@@ -85,6 +85,9 @@ class GenerateRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     pinned_pantry_item_ids: list[int] = Field(default_factory=list, max_length=3)
+    # Ephemeral, per-batch steer ("grill something", "use the wok"). Applies only
+    # to the batch it's typed for; does not carry into the next generation.
+    direction: str | None = Field(default=None, max_length=200)
 
 
 class GenerateResponse(BaseModel):
@@ -95,6 +98,7 @@ class LatestResponse(BaseModel):
     generated_at: datetime | None = None
     store_name: str | None = None
     pinned: list[str] = Field(default_factory=list)
+    direction: str | None = None
     recipes: list[RecipeRead]
 
 

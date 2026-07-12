@@ -8,10 +8,13 @@ import type {
   WeekResponse,
 } from "./recipeTypes";
 
-export const generateRecipes = (pinnedIds: number[] = []) =>
+export const generateRecipes = (pinnedIds: number[] = [], direction?: string | null) =>
   apiFetch<GenerateResponse>("/api/v1/recipes/generate", {
     method: "POST",
-    json: { pinned_pantry_item_ids: pinnedIds },
+    json: {
+      pinned_pantry_item_ids: pinnedIds,
+      ...(direction && direction.trim() ? { direction: direction.trim() } : {}),
+    },
   });
 
 export const getLatestRecipes = () =>

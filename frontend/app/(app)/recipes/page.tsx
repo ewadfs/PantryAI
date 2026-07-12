@@ -23,6 +23,7 @@ import RecipeSheet from "@/components/recipes/RecipeSheet";
 import StoreSheet from "@/components/recipes/StoreSheet";
 import ThisWeek from "@/components/recipes/ThisWeek";
 import Confetti from "@/components/recipes/Confetti";
+import Composer from "@/components/recipes/Composer";
 import UseUpRow, { type Pin } from "@/components/recipes/UseUpRow";
 
 const STEPS = [
@@ -65,8 +66,15 @@ export default function RecipesPage() {
   const [pantryItems, setPantryItems] = useState<PantryItem[]>([]);
   const [batchPins, setBatchPins] = useState<string[]>([]);
   const [tab, setTab] = useState<"discover" | "week">("discover");
+  const [direction, setDirection] = useState("");
+  const [batchDirection, setBatchDirection] = useState<string | null>(null);
+  const [lastDirection, setLastDirection] = useState("");
   const stepTimer = useRef<ReturnType<typeof setInterval> | null>(null);
   const pollTimer = useRef<ReturnType<typeof setInterval> | null>(null);
+  const directionRef = useRef("");
+  useEffect(() => {
+    directionRef.current = direction;
+  }, [direction]);
 
   function selectTab(t: "discover" | "week") {
     setTab(t);
@@ -80,9 +88,6 @@ export default function RecipesPage() {
   const currentStoreName = currentStore?.store.store_name ?? null;
   const stale =
     !!batchStore && !!currentStoreName && batchStore !== currentStoreName;
-  const pinLabel = pins.length
-    ? `Generate with ${pins[0].name}${pins.length > 1 ? ` (+${pins.length - 1})` : ""}`
-    : null;
 
   const savedIds = useMemo(
     () => new Set((week?.recipes ?? []).map((w) => w.recipe.id)),
@@ -107,12 +112,17 @@ export default function RecipesPage() {
       5000,
     );
     const activePins = pinsRef.current;
+    const activeDirection = directionRef.current.trim();
     try {
-      const res = await generateRecipes(activePins.map((p) => p.id));
+      const res = await generateRecipes(activePins.map((p) => p.id), activeDirection);
       setRecipes(res.recipes);
       setGeneratedAt(res.recipes[0]?.generated_at ?? new Date().toISOString());
       setBatchPins(activePins.map((p) => p.name));
+      setBatchDirection(activeDirection || null);
       setPins([]); // pins satisfied — clear them
+      // Direction is ephemeral: clear the input, offer it back as a placeholder.
+      if (activeDirection) setLastDirection(activeDirection);
+      setDirection("");
       // Fresh batch is anchored to the current default store.
       setStores((prev) => {
         const name = (prev.find((s) => s.is_default) ?? prev[0])?.store.store_name;
@@ -121,7 +131,7 @@ export default function RecipesPage() {
       });
     } catch (e) {
       setError(e instanceof Error ? e.message : "Could not generate recipes.");
-      // keep pins on failure so the user can retry
+      // keep pins + direction on failure so the user can retry
     } finally {
       if (stepTimer.current) clearInterval(stepTimer.current);
       setGenerating(false);
@@ -137,6 +147,7 @@ export default function RecipesPage() {
         setGeneratedAt(res.generated_at);
         setBatchStore(res.store_name);
         setBatchPins(res.pinned ?? []);
+        setBatchDirection(res.direction ?? null);
       }
     } catch {
       /* ignore — user can generate */
@@ -179,6 +190,7 @@ export default function RecipesPage() {
           setRecipes(res.recipes);
           setGeneratedAt(res.generated_at);
           setBatchStore(res.store_name);
+          setBatchDirection(res.direction ?? null);
           if (pollTimer.current) clearInterval(pollTimer.current);
         }
       } catch {
@@ -326,6 +338,14 @@ export default function RecipesPage() {
 
   const weekCount = week?.recipes.length ?? 0;
 
+  const labelParts: string[] = [];
+  if (generatedAt)
+    labelParts.push(`Generated ${timeAgo(generatedAt)}${batchStore ? ` at ${batchStore}` : ""}`);
+  else if (batchStore) labelParts.push(`At ${batchStore}`);
+  if (batchPins.length) labelParts.push(`built around: ${batchPins.join(", ")}`);
+  if (batchDirection) labelParts.push(`direction: ‘${batchDirection}’`);
+  const batchLabel = labelParts.join(" · ");
+
   return (
     <div className="px-5 pt-8">
       {confetti && <Confetti onDone={() => setConfetti(false)} />}
@@ -406,25 +426,19 @@ export default function RecipesPage() {
             </div>
           )}
 
-          {/* Generate area */}
+          {/* Generate area — the composer below is the sole trigger */}
           {!recipes && !generating && !warming && (
             <div className="rounded-2xl border border-hairline bg-surface p-6 text-center">
               <p className="text-base font-semibold text-ink">Tonight&apos;s dinner, sorted</p>
               <p className="mt-1 text-sm text-ink-soft">
-                Three options built from your pantry and this week&apos;s deals.
+                Three options built from your pantry and this week&apos;s deals. Add a
+                direction below, or just tap ✨ Generate.
               </p>
-              <button
-                onClick={generate}
-                className="mt-5 flex h-14 w-full items-center justify-center rounded-2xl bg-brand text-base font-semibold text-white shadow-lg shadow-brand/25 active:scale-[.99]"
-              >
-                {pinLabel ?? "🍳 Generate 3 recipes"}
-              </button>
             </div>
           )}
 
           {generating && (
             <div>
-              <p className="mb-4 text-center text-sm font-medium text-ink-soft">{STEPS[step]}</p>
               <div className="flex flex-col gap-4">
                 {[0, 1, 2].map((i) => (
                   <SkeletonCard key={i} />
@@ -435,19 +449,14 @@ export default function RecipesPage() {
 
           {recipes && !generating && (
             <div>
-              {batchPins.length > 0 && (
-                <p className="mb-2 text-sm font-semibold text-brand-dark">
-                  Built around: {batchPins.join(", ")}
-                </p>
-              )}
               {stale ? (
                 <div className="mb-3 rounded-xl bg-warn-soft px-4 py-3 text-sm text-warn">
                   These were generated for {batchStore}. New {currentStoreName} recipes
                   are on the way…
                 </div>
               ) : (
-                generatedAt && (
-                  <p className="mb-3 text-xs text-ink-faint">Generated {timeAgo(generatedAt)}</p>
+                batchLabel && (
+                  <p className="mb-3 text-xs text-ink-faint">{batchLabel}</p>
                 )
               )}
               <div className="flex flex-col gap-4">
@@ -463,19 +472,11 @@ export default function RecipesPage() {
                   />
                 ))}
               </div>
-              <button
-                onClick={generate}
-                className={`mt-4 flex h-12 w-full items-center justify-center rounded-2xl text-sm font-semibold active:scale-[.99] ${
-                  pinLabel || stale
-                    ? "bg-brand text-white shadow-lg shadow-brand/25"
-                    : "border border-hairline bg-surface text-ink"
-                }`}
-              >
-                {pinLabel ??
-                  (stale ? `Get ${currentStoreName} recipes` : "Show me different options")}
-              </button>
             </div>
           )}
+
+          {/* room so the last card clears the sticky composer */}
+          <div className="h-32" />
         </div>
       )}
 
@@ -517,6 +518,17 @@ export default function RecipesPage() {
           saved={savedIds.has(selected.id)}
           onSave={() => onSave(selected.id)}
           onClose={() => setSelected(null)}
+        />
+      )}
+
+      {tab === "discover" && (
+        <Composer
+          value={direction}
+          onChange={setDirection}
+          onGenerate={generate}
+          generating={generating}
+          stepText={STEPS[step]}
+          lastDirection={lastDirection}
         />
       )}
 

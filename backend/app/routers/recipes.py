@@ -57,8 +57,11 @@ async def generate(
     (up to 3) pantry items.
     """
     pinned = payload.pinned_pantry_item_ids if payload else []
+    direction = payload.direction if payload else None
     try:
-        recipes = await recipe_engine.generate_concepts(db, current_user, pinned)
+        recipes = await recipe_engine.generate_concepts(
+            db, current_user, pinned, direction
+        )
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
     reads = [
@@ -83,7 +86,7 @@ async def latest(
         .limit(1)
     )
     if newest is None:
-        return LatestResponse(generated_at=None, store_name=None, recipes=[])
+        return LatestResponse(generated_at=None, store_name=None, direction=None, recipes=[])
     rows = (
         (
             await db.execute(
@@ -104,10 +107,12 @@ async def latest(
         for p in (rows[0].pinned_items_json or [])
         if isinstance(p, dict) and p.get("name")
     ] if rows else []
+    direction = rows[0].direction if rows else None
     return LatestResponse(
         generated_at=newest,
         store_name=store_name,
         pinned=pinned,
+        direction=direction,
         recipes=[RecipeRead.model_validate(recipe_engine.recipe_to_read(r)) for r in rows],
     )
 

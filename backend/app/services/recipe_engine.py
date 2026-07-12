@@ -231,6 +231,19 @@ def _protein_block(floor: int) -> str:
     )
 
 
+def _direction_block(direction: str | None) -> str:
+    d = (direction or "").strip()
+    if not d:
+        return ""
+    return (
+        f"\n\nThe user's DIRECTION for THIS batch: '{d}'. All three concepts should "
+        "honor it. This steer ranks ABOVE their cuisine preferences, but it never "
+        "overrides the hard constraints (allergies, excluded ingredients, the "
+        "protein floor, or pinned items) — satisfy every one of those first, then "
+        "shape the batch to the direction."
+    )
+
+
 def _taste_block(taste_notes: str | None) -> str:
     notes = (taste_notes or "").strip()
     if not notes:
@@ -314,6 +327,7 @@ class _Ctx:
     taste_block: str = ""
     history_block: str = ""
     variety_block: str = ""
+    direction: str = ""
 
 
 async def _resolve_pins(
@@ -716,6 +730,10 @@ def _profile_text(user: User, ctx: _Ctx) -> str:
         f"skill: {user.skill_level}; max prep: {user.max_prep_time} min",
         f"diet: {user.diet_type}; allergies: {_fmt_list(user.allergies)}",
     ]
+    if ctx.direction:
+        lines.append(
+            f"DIRECTION for this batch (ranks above cuisines): '{ctx.direction}'"
+        )
     return "\n".join(lines) + ctx.taste_block + ctx.history_block
 
 
@@ -909,13 +927,17 @@ async def _enforce_variety(
 # Stage 1: concepts
 # --------------------------------------------------------------------------- #
 async def generate_concepts(
-    db: AsyncSession, user: User, pinned_ids: list[int] | None = None
+    db: AsyncSession,
+    user: User,
+    pinned_ids: list[int] | None = None,
+    direction: str | None = None,
 ) -> list[Recipe]:
     """One fast Claude call → 3 persisted concept recipes (status='concept')."""
     pins = await _resolve_pins(db, user.id, pinned_ids or [])
     pin_dicts = _pin_dicts(pins)
     ctx = await _load_context(db, user)
     ctx.pin_block = _pin_block(pin_dicts)
+    ctx.direction = (direction or "").strip()
     ctx.history_block, ctx.variety_block, recent_sigs = await _build_taste_history(
         db, user.id
     )
@@ -948,6 +970,7 @@ async def generate_concepts(
         system
         + _protein_block(ctx.protein_floor)
         + ctx.taste_block
+        + _direction_block(ctx.direction)
         + ctx.history_block
         + ctx.variety_block
         + ctx.pin_block
@@ -998,6 +1021,7 @@ async def generate_concepts(
             cuisine=cuisine,
             generated_store_name=ctx.store_name,
             pinned_items_json=pin_dicts or None,
+            direction=ctx.direction or None,
             critic_json=critic or None,
             signature_json={
                 "anchor_ingredient": r.get("anchor_ingredient"),

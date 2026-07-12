@@ -79,6 +79,9 @@ class CircularFetcher:
     """Fetches a chain's circular pages and records a ``circular_fetches`` row."""
 
     def _source_url(self, chain: SupportedChain) -> str:
+        # Prefer the source the probe resolved onto the chain row.
+        if chain.source_url:
+            return chain.source_url
         path = _PATHS.get(chain.chain_slug, chain.chain_slug.replace("_", "-"))
         return f"{_SOURCE_BASE}/{path}"
 
@@ -100,12 +103,13 @@ class CircularFetcher:
         return [by_num[n] for n in sorted(by_num)]
 
     async def fetch_circular(
-        self, db: AsyncSession, chain: SupportedChain
+        self, db: AsyncSession, chain: SupportedChain, region_key: str | None = None
     ) -> CircularFetch:
         """Fetch + store this chain's circular; always returns a persisted row.
 
         Network/parse failures are captured as a ``failed`` fetch row rather than
-        raised, so one bad chain can't abort the pipeline.
+        raised, so one bad chain can't abort the pipeline. ``region_key`` tags the
+        fetch so its deals stay isolated to the user's region.
         """
         today = date.today()
         source_url = self._source_url(chain)
@@ -173,6 +177,7 @@ class CircularFetcher:
             error_message=error_message,
             valid_from=valid_from,
             valid_to=valid_to,
+            region_key=region_key,
         )
         db.add(fetch)
         await db.flush()

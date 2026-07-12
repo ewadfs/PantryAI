@@ -36,6 +36,10 @@ class Settings(BaseSettings):
     # Anthropic
     anthropic_api_key: str = ""
 
+    # Google Places (store discovery). When empty, /stores/discover falls back
+    # to the seeded store catalog (Prompt 24 B).
+    google_places_api_key: str = ""
+
     # Supabase (auth)
     supabase_url: str = ""
     supabase_jwt_secret: str = ""

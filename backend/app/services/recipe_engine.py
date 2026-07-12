@@ -200,29 +200,38 @@ def _use_soon(item: PantryItem, today: date) -> bool:
 
 async def _default_store(
     db: AsyncSession, user_id: int
-) -> tuple[int | None, str | None, str | None]:
-    """(chain_id, chain_name, store_name) of the user's default store."""
+) -> tuple[int | None, str | None, str | None, str | None]:
+    """(chain_id, chain_name, store_name, region_key) of the user's default store."""
     row = (
         await db.execute(
             select(
                 StoreLocation.chain_id,
                 SupportedChain.chain_name,
                 StoreLocation.store_name,
+                StoreLocation.region_key,
             )
             .join(UserStore, UserStore.store_location_id == StoreLocation.id)
             .join(SupportedChain, SupportedChain.id == StoreLocation.chain_id)
             .where(UserStore.user_id == user_id, UserStore.is_default.is_(True))
         )
     ).first()
-    return (row[0], row[1], row[2]) if row else (None, None, None)
+    return (row[0], row[1], row[2], row[3]) if row else (None, None, None, None)
 
 
-async def _all_current_deals(db: AsyncSession, chain_id: int, today: date) -> list[DealCache]:
+async def _all_current_deals(
+    db: AsyncSession, chain_id: int, today: date, region_key: str | None = None
+) -> list[DealCache]:
+    # Region-scoped when the store has a region; falls back to chain for legacy.
+    scope = (
+        DealCache.region_key == region_key
+        if region_key is not None
+        else DealCache.chain_id == chain_id
+    )
     return (
         (
             await db.execute(
                 select(DealCache).where(
-                    DealCache.chain_id == chain_id,
+                    scope,
                     DealCache.valid_to >= today,
                     or_(DealCache.valid_from <= today, DealCache.valid_from.is_(None)),
                 )
@@ -472,8 +481,10 @@ async def _load_context(db: AsyncSession, user: User) -> _Ctx:
         .all()
     )
 
-    chain_id, chain_name, store_name = await _default_store(db, user.id)
-    all_deals = await _all_current_deals(db, chain_id, today) if chain_id else []
+    chain_id, chain_name, store_name, region_key = await _default_store(db, user.id)
+    all_deals = (
+        await _all_current_deals(db, chain_id, today, region_key) if chain_id else []
+    )
     deal_by_ingredient: dict[int, DealCache] = {}
     for d in all_deals:
         iid = d.matched_ingredient_id

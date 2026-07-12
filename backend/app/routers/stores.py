@@ -6,16 +6,37 @@ from app.database import get_db
 from app.models.store import StoreLocation, SupportedChain, UserStore
 from app.models.user import User
 from app.schemas.store import (
+    DiscoverResponse,
+    DiscoveredStore,
     StoreLocationRead,
     StoreSelectionUpdate,
     UserStoreRead,
 )
-from app.services import recipe_engine
+from app.services import store_discovery
 from app.services.auth import get_current_user
+from app.services.vision import activate_region_bg
 
 router = APIRouter(prefix="/stores", tags=["stores"])
 
 MAX_STORES = 5
+
+
+async def _activate_store_deals(
+    db: AsyncSession, store_location_id: int, background_tasks: BackgroundTasks
+) -> None:
+    """Fire lazy deal activation for a store's chain×region (Prompt 24 C2).
+
+    Ensures the store's region has fresh deals; a no-op in the background task if
+    a valid fetch already exists, or demand-logged if the chain has no source yet.
+    """
+    row = (
+        await db.execute(
+            select(StoreLocation.chain_id, StoreLocation.region_key)
+            .where(StoreLocation.id == store_location_id)
+        )
+    ).first()
+    if row and row.region_key:
+        background_tasks.add_task(activate_region_bg, row.chain_id, row.region_key)
 
 
 def _to_location_read(loc: StoreLocation, chain: SupportedChain) -> StoreLocationRead:
@@ -32,6 +53,27 @@ def _to_location_read(loc: StoreLocation, chain: SupportedChain) -> StoreLocatio
         chain_id=chain.id,
         chain_name=chain.chain_name,
         chain_slug=chain.chain_slug,
+    )
+
+
+@router.get("/discover", response_model=DiscoverResponse)
+async def discover_stores(
+    zip: str,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> DiscoverResponse:
+    """Discover nearby stores for a ZIP (Google Places when configured, else the
+    seeded catalog). Each store carries a has_deals_source flag."""
+    z = (zip or "").strip()
+    if not (len(z) == 5 and z.isdigit()):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail="ZIP must be 5 digits."
+        )
+    source, stores = await store_discovery.discover(db, z)
+    return DiscoverResponse(
+        zip_code=z,
+        source=source,
+        stores=[DiscoveredStore(**s) for s in stores],
     )
 
 
@@ -107,15 +149,18 @@ async def set_default_store(
         s.is_default = s.store_location_id == store_location_id
     await db.flush()
 
+    # Prompt 24 C2: switching to a store activates its chain×region deals.
+    await _activate_store_deals(db, store_location_id, background_tasks)
     # Prompt 27 pre-gen discipline: a store switch no longer auto-generates a
-    # batch (that burned a paid generation on every toggle). The Recipes tab
-    # shows a staleness note and the emphasized Generate button covers intent.
+    # recipe batch (that burned a paid generation on every toggle). The Recipes
+    # tab shows a staleness note and the emphasized Generate button covers intent.
     return await list_my_stores(current_user=current_user, db=db)
 
 
 @router.put("/mine", response_model=list[UserStoreRead])
 async def replace_my_stores(
     payload: StoreSelectionUpdate,
+    background_tasks: BackgroundTasks,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> list[UserStoreRead]:
@@ -173,5 +218,10 @@ async def replace_my_stores(
             )
         )
     await db.flush()
+
+    # Prompt 24 C2: activate deals for the newly-chosen default store's region.
+    default_id = payload.default_store_id or (unique_ids[0] if unique_ids else None)
+    if default_id is not None:
+        await _activate_store_deals(db, default_id, background_tasks)
 
     return await list_my_stores(current_user=current_user, db=db)

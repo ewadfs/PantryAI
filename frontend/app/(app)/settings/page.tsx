@@ -6,7 +6,12 @@ import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase";
 import { useToast } from "@/components/ui/Toast";
 import { getMe, updateMe, type UserProfile, type UserUpdate } from "@/lib/userApi";
-import { getAllStores, getMyStores, replaceMyStores } from "@/lib/storesApi";
+import {
+  discoverStores,
+  getAllStores,
+  getMyStores,
+  replaceMyStores,
+} from "@/lib/storesApi";
 import type { StoreLocation } from "@/lib/listTypes";
 
 const GOALS: [string, string][] = [
@@ -38,6 +43,44 @@ export default function SettingsPage() {
   const [selected, setSelected] = useState<number[]>([]);
   const [defaultId, setDefaultId] = useState<number | null>(null);
   const [savingStores, setSavingStores] = useState(false);
+  const [zip, setZip] = useState("");
+  const [discovering, setDiscovering] = useState(false);
+  // Deals status per store id (from discovery) → "deals coming soon" badge.
+  const [dealsStatusById, setDealsStatusById] = useState<Record<number, string>>({});
+
+  async function onDiscover() {
+    const z = zip.trim();
+    if (!/^\d{5}$/.test(z)) {
+      toast.error("Enter a 5-digit ZIP.");
+      return;
+    }
+    setDiscovering(true);
+    try {
+      const res = await discoverStores(z);
+      setAllStores(
+        res.stores.map((s) => ({
+          id: s.id,
+          store_name: s.store_name,
+          address: s.address,
+          city: s.city,
+          state: s.state,
+          zip_code: s.zip_code,
+          is_active: true,
+          chain_id: s.chain_id,
+          chain_name: s.chain_name,
+          chain_slug: s.chain_slug,
+        })),
+      );
+      setDealsStatusById(
+        Object.fromEntries(res.stores.map((s) => [s.id, s.deals_status])),
+      );
+      if (!res.stores.length) toast.error("No stores found for that ZIP.");
+    } catch {
+      toast.error("Couldn't search that ZIP.");
+    } finally {
+      setDiscovering(false);
+    }
+  }
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -310,6 +353,22 @@ export default function SettingsPage() {
         <p className="-mt-1 mb-1 text-xs text-ink-faint">
           Pick up to {MAX_STORES}. Tap the star to set your default.
         </p>
+        <div className="mb-1 flex gap-2">
+          <input
+            value={zip}
+            onChange={(e) => setZip(e.target.value.replace(/\D/g, "").slice(0, 5))}
+            placeholder="ZIP code"
+            inputMode="numeric"
+            className="input flex-1"
+          />
+          <button
+            onClick={onDiscover}
+            disabled={discovering}
+            className="h-12 shrink-0 rounded-2xl bg-brand px-4 text-sm font-semibold text-white disabled:opacity-60"
+          >
+            {discovering ? "Finding…" : "Find stores"}
+          </button>
+        </div>
         {[...byChain.entries()].map(([chain, locs]) => (
           <div key={chain} className="rounded-2xl border border-hairline bg-surface">
             <p className="border-b border-hairline px-4 py-2 text-xs font-semibold uppercase tracking-wide text-ink-faint">
@@ -335,6 +394,11 @@ export default function SettingsPage() {
                   <div className="min-w-0 flex-1">
                     <p className="truncate text-sm font-medium text-ink">{s.store_name}</p>
                     {s.city && <p className="truncate text-xs text-ink-faint">{s.city}</p>}
+                    {dealsStatusById[s.id] === "pending_source" && (
+                      <span className="mt-0.5 inline-block rounded-full bg-warn-soft px-2 py-0.5 text-[10px] font-semibold text-warn">
+                        deals coming soon
+                      </span>
+                    )}
                   </div>
                   <button
                     aria-label="Set default"

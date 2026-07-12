@@ -14,12 +14,24 @@ export type Deal = {
   valid_to: string | null;
 };
 
+export type DealsState = "ready" | "loading" | "pending_source" | "no_store";
+
 export type DealListResponse = {
   count: number;
   page: number;
   per_page: number;
+  state: DealsState;
   deals: Deal[];
 };
+
+export type DealsStateResponse = {
+  state: DealsState;
+  chain_name: string | null;
+  region_key: string | null;
+};
+
+export const getDealsState = () =>
+  apiFetch<DealsStateResponse>("/api/v1/deals/state");
 
 export const getTopDeals = () => apiFetch<Deal[]>("/api/v1/deals/top");
 

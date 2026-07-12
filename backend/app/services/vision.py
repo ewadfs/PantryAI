@@ -22,13 +22,15 @@ from PIL import Image
 from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.database import AsyncSessionLocal
+
 from app.config import settings
 from app.models.deal import CircularFetch, DealCache
 from app.services import ai_metering
 from app.models.ingredient import IngredientMaster
 from app.models.pantry import PantryScan
-from app.models.store import SupportedChain
-from app.services import deal_fetcher, ingredient_matcher, storage
+from app.models.store import StoreLocation, SupportedChain, UserStore
+from app.services import deal_fetcher, ingredient_matcher, regions, storage
 
 logger = logging.getLogger(__name__)
 
@@ -605,6 +607,7 @@ class CircularExtractor:
         valid_from: date | None,
         valid_to: date | None,
         page_number: int,
+        region_key: str | None = None,
     ) -> DealCache | None:
         """Validate + map one extracted deal to a ``DealCache`` row, or drop it."""
         name = _trim(raw.get("product_name"), 300)
@@ -658,6 +661,7 @@ class CircularExtractor:
             ),
             valid_from=valid_from,
             valid_to=valid_to,
+            region_key=region_key,
             page_number=page_number,
         )
 
@@ -672,14 +676,18 @@ class CircularExtractor:
             raise ValueError(f"CircularFetch {fetch_id} not found.")
         chain = await db.get(SupportedChain, fetch.chain_id)
         chain_name = chain.chain_name if chain else "this store"
+        region_key = fetch.region_key
 
         today = date.today()
-        await db.execute(
-            delete(DealCache).where(
-                DealCache.chain_id == fetch.chain_id,
-                DealCache.valid_to < today,
-            )
+        # Purge only this region's stale rows so a fresh fetch for one region
+        # never wipes another region's still-valid deals.
+        stale = delete(DealCache).where(DealCache.valid_to < today)
+        stale = stale.where(
+            DealCache.region_key == region_key
+            if region_key is not None
+            else DealCache.chain_id == fetch.chain_id
         )
+        await db.execute(stale)
         await ingredient_matcher.preload(db)
         # Release the DB connection before the multi-minute Vision phase — holding
         # an open transaction across it lets managed-host proxies drop the idle
@@ -718,6 +726,7 @@ class CircularExtractor:
                     valid_from=fetch.valid_from,
                     valid_to=fetch.valid_to,
                     page_number=page_number,
+                    region_key=region_key,
                 )
                 if row is None:
                     continue
@@ -737,113 +746,139 @@ class CircularExtractor:
             "regular_price": with_regular,
         }
 
-    async def run_pipeline(
-        self, db: AsyncSession, chain_slugs: list[str] | None = None
-    ) -> list[dict]:
-        """Fetch + process each chain's circular; one failure can't stop others.
+    async def _combo_has_valid_fetch(
+        self, db: AsyncSession, chain_id: int, region_key: str, today: date
+    ) -> CircularFetch | None:
+        return await db.scalar(
+            select(CircularFetch)
+            .where(
+                CircularFetch.chain_id == chain_id,
+                CircularFetch.region_key == region_key,
+                CircularFetch.status.in_(("success", "partial")),
+                CircularFetch.valid_to >= today,
+            )
+            .order_by(CircularFetch.fetched_at.desc())
+        )
 
-        Skips chains that already have a ``success`` fetch still valid today.
-        Returns a per-chain summary list.
-        """
+    async def process_combo(
+        self, db: AsyncSession, chain: SupportedChain, region_key: str
+    ) -> dict:
+        """Fetch + extract one chain×region circular; returns a summary dict."""
+        slug = chain.chain_slug
         fetcher = deal_fetcher.CircularFetcher()
-        today = date.today()
+        fetch = await fetcher.fetch_circular(db, chain, region_key)
+        await db.commit()
+        if fetch.status == "failed":
+            return {
+                "chain": slug, "region": region_key, "status": "failed",
+                "pages": 0, "deals": 0, "matched": 0, "error": fetch.error_message,
+            }
+        result = await self.process_circular(db, fetch.id)
+        await db.commit()
+        return {
+            "chain": slug, "region": region_key, "status": fetch.status,
+            "pages": result["pages"], "deals": result["deals"],
+            "matched": result["matched"], "regular_price": result["regular_price"],
+        }
 
-        query = select(SupportedChain).where(
-            SupportedChain.is_active.is_(True),
-            SupportedChain.has_weekly_circular.is_(True),
+    async def activate_region(
+        self, db: AsyncSession, chain_id: int, region_key: str, zip_code: str | None = None
+    ) -> dict:
+        """Lazy activation: ensure a chain×region has fresh deals.
+
+        No-op if a valid fetch already exists. If the chain has no working source
+        yet, logs demand to ``store_requests`` instead of fetching.
+        """
+        chain = await db.get(SupportedChain, chain_id)
+        if chain is None:
+            return {"status": "unknown_chain"}
+        today = date.today()
+        if await self._combo_has_valid_fetch(db, chain_id, region_key, today):
+            return {"chain": chain.chain_slug, "region": region_key, "status": "skipped"}
+        if chain.deals_status != "active" and not chain.source_url:
+            await regions.log_store_request(
+                db, chain_id=chain_id, chain_slug=chain.chain_slug,
+                region_key_val=region_key, zip_code=zip_code,
+            )
+            await db.commit()
+            return {
+                "chain": chain.chain_slug, "region": region_key,
+                "status": "pending_source",
+            }
+        return await self.process_combo(db, chain, region_key)
+
+    async def run_pipeline(
+        self,
+        db: AsyncSession,
+        chain_slugs: list[str] | None = None,
+        *,
+        dry_run: bool = False,
+    ) -> list[dict]:
+        """Cron entry: refresh DISTINCT chain×region combos that have ≥1 user_store.
+
+        Combos with no users are never enumerated (skipped-dormant). Combos with a
+        still-valid fetch are skipped; pending-source combos log demand instead of
+        fetching. ``dry_run`` lists the active combos without fetching.
+        """
+        today = date.today()
+        # Active combos = distinct (chain_id, region_key) a real user saved.
+        combo_q = (
+            select(
+                StoreLocation.chain_id,
+                StoreLocation.region_key,
+                SupportedChain.chain_slug,
+            )
+            .join(UserStore, UserStore.store_location_id == StoreLocation.id)
+            .join(SupportedChain, SupportedChain.id == StoreLocation.chain_id)
+            .where(StoreLocation.region_key.isnot(None))
+            .distinct()
         )
         if chain_slugs:
-            query = query.where(SupportedChain.chain_slug.in_(chain_slugs))
-        chains = (
-            (await db.execute(query.order_by(SupportedChain.id))).scalars().all()
-        )
+            combo_q = combo_q.where(SupportedChain.chain_slug.in_(chain_slugs))
+        combos = (await db.execute(combo_q)).all()
 
         summary: list[dict] = []
-        for chain in chains:
-            # Capture identity up front: after a rollback the ORM object is
-            # expired, and lazy-loading it in the error path would attempt DB IO
-            # outside the async greenlet.
-            slug = chain.chain_slug
-            chain_id = chain.id
-            try:
-                existing = await db.scalar(
-                    select(CircularFetch)
-                    .where(
-                        CircularFetch.chain_id == chain_id,
-                        CircularFetch.status == "success",
-                        CircularFetch.valid_to >= today,
-                    )
-                    .order_by(CircularFetch.fetched_at.desc())
-                )
-                if existing is not None:
-                    deals = await db.scalar(
-                        select(func.count())
-                        .select_from(DealCache)
-                        .where(
-                            DealCache.chain_id == chain_id,
-                            DealCache.valid_to >= today,
-                        )
-                    )
-                    matched = await db.scalar(
-                        select(func.count())
-                        .select_from(DealCache)
-                        .where(
-                            DealCache.chain_id == chain_id,
-                            DealCache.valid_to >= today,
-                            DealCache.matched_ingredient_id.isnot(None),
-                        )
-                    )
-                    summary.append(
-                        {
-                            "chain": slug,
-                            "status": "skipped",
-                            "pages": existing.page_count or 0,
-                            "deals": deals or 0,
-                            "matched": matched or 0,
-                        }
-                    )
-                    continue
-
-                fetch = await fetcher.fetch_circular(db, chain)
-                # Persist the fetch (and notes) before the expensive extract, so a
-                # later failure doesn't discard the downloaded pages.
-                await db.commit()
-
-                if fetch.status == "failed":
-                    summary.append(
-                        {
-                            "chain": slug,
-                            "status": "failed",
-                            "pages": 0,
-                            "deals": 0,
-                            "matched": 0,
-                            "error": fetch.error_message,
-                        }
-                    )
-                    continue
-
-                result = await self.process_circular(db, fetch.id)
-                await db.commit()
+        for chain_id, region_key, slug in combos:
+            if dry_run:
                 summary.append(
-                    {
-                        "chain": slug,
-                        "status": fetch.status,
-                        "pages": result["pages"],
-                        "deals": result["deals"],
-                        "matched": result["matched"],
-                        "regular_price": result["regular_price"],
-                    }
+                    {"chain": slug, "region": region_key, "status": "would_refresh"}
                 )
-            except Exception as exc:  # noqa: BLE001 - isolate per-chain failures
+                continue
+            try:
+                chain = await db.get(SupportedChain, chain_id)
+                if chain is None:
+                    continue
+                if chain.deals_status != "active" and not chain.source_url:
+                    await regions.log_store_request(
+                        db, chain_id=chain_id, chain_slug=slug, region_key_val=region_key
+                    )
+                    await db.commit()
+                    summary.append(
+                        {"chain": slug, "region": region_key, "status": "pending_source"}
+                    )
+                    continue
+                if await self._combo_has_valid_fetch(db, chain_id, region_key, today):
+                    summary.append(
+                        {"chain": slug, "region": region_key, "status": "skipped"}
+                    )
+                    continue
+                summary.append(await self.process_combo(db, chain, region_key))
+            except Exception as exc:  # noqa: BLE001 - isolate per-combo failures
                 await db.rollback()
                 summary.append(
                     {
-                        "chain": slug,
-                        "status": "error",
-                        "pages": 0,
-                        "deals": 0,
-                        "matched": 0,
+                        "chain": slug, "region": region_key, "status": "error",
+                        "pages": 0, "deals": 0, "matched": 0,
                         "error": f"{type(exc).__name__}: {exc}",
                     }
                 )
         return summary
+
+
+async def activate_region_bg(chain_id: int, region_key: str, zip_code: str | None = None) -> None:
+    """Background-task entry for lazy activation (own DB session)."""
+    async with AsyncSessionLocal() as db:
+        try:
+            await CircularExtractor().activate_region(db, chain_id, region_key, zip_code)
+        except Exception:  # noqa: BLE001 - background best-effort
+            logger.exception("activate_region_bg failed for %s/%s", chain_id, region_key)

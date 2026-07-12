@@ -51,4 +51,14 @@ class DealListResponse(BaseModel):
     count: int = Field(description="Total matching deals (before pagination).")
     page: int
     per_page: int
+    # 'ready' | 'loading' (activation in progress) | 'pending_source' | 'no_store'
+    state: str = "ready"
     deals: list[DealRead]
+
+
+class DealsStateResponse(BaseModel):
+    """Lightweight banner state for the Deals tab / Home."""
+
+    state: str = "no_store"
+    chain_name: str | None = None
+    region_key: str | None = None

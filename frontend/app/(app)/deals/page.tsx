@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useToast } from "@/components/ui/Toast";
-import { getDeals, type Deal } from "@/lib/dealsApi";
+import { getDeals, type Deal, type DealsState } from "@/lib/dealsApi";
 import { CATEGORIES, categoryLabel } from "@/lib/categories";
 
 const PER_PAGE = 20;
@@ -21,6 +21,7 @@ export default function DealsPage() {
 
   const [deals, setDeals] = useState<Deal[]>([]);
   const [count, setCount] = useState(0);
+  const [dealsState, setDealsState] = useState<DealsState>("ready");
   const [page, setPage] = useState(1);
   const [loading, setLoading] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
@@ -47,6 +48,7 @@ export default function DealsPage() {
         if (id !== reqId.current) return; // stale response, ignore
         setCount(res.count);
         setPage(res.page);
+        setDealsState(res.state);
         setDeals((prev) => (replace ? res.deals : [...prev, ...res.deals]));
       } catch {
         toast.error("Couldn't load deals.", () => fetchPage(targetPage, replace));
@@ -99,6 +101,17 @@ export default function DealsPage() {
           {Array.from({ length: 8 }).map((_, i) => (
             <div key={i} className="skeleton h-16 rounded-2xl" />
           ))}
+        </div>
+      ) : deals.length === 0 && dealsState === "loading" ? (
+        <div className="mt-6 rounded-2xl bg-warn-soft px-4 py-4 text-center text-sm text-warn">
+          <div className="mb-1 text-2xl">🛒</div>
+          Deals loading for your store — usually a few minutes. Check back shortly.
+        </div>
+      ) : deals.length === 0 && dealsState === "pending_source" ? (
+        <div className="mt-6 rounded-2xl border border-hairline bg-surface px-4 py-4 text-center text-sm text-ink-soft">
+          <div className="mb-1 text-2xl">📍</div>
+          Deals coming soon for this store. We&apos;ve noted the request and are
+          working on adding its weekly ad.
         </div>
       ) : deals.length === 0 ? (
         <p className="mt-10 text-center text-sm text-ink-soft">

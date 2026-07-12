@@ -34,6 +34,8 @@ class CircularFetch(Base):
     error_message: Mapped[str | None] = mapped_column(Text)
     valid_from: Mapped[date | None] = mapped_column(Date)
     valid_to: Mapped[date | None] = mapped_column(Date)
+    # Deals region this fetch covers ({chain_slug}:{state}).
+    region_key: Mapped[str | None] = mapped_column(String(60))
     fetched_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
@@ -45,6 +47,7 @@ class DealCache(Base):
         CheckConstraint("sale_price > 0", name="ck_deal_cache_sale_price_positive"),
         Index("ix_deal_cache_chain_validity", "chain_id", "valid_from", "valid_to"),
         Index("ix_deal_cache_matched_ingredient", "matched_ingredient_id"),
+        Index("ix_deal_cache_region_validity", "region_key", "valid_from", "valid_to"),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
@@ -71,6 +74,8 @@ class DealCache(Base):
     match_confidence: Mapped[Decimal | None] = mapped_column(Numeric(3, 2))
     valid_from: Mapped[date | None] = mapped_column(Date)
     valid_to: Mapped[date | None] = mapped_column(Date)
+    # Deals region ({chain_slug}:{state}); filters deals to the user's store.
+    region_key: Mapped[str | None] = mapped_column(String(60))
     page_number: Mapped[int | None] = mapped_column(Integer)
     extracted_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()

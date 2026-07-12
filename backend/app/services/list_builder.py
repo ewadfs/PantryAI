@@ -65,33 +65,39 @@ def _unit_key(unit: str | None) -> str:
 
 async def default_chain(
     db: AsyncSession, user_id: int
-) -> tuple[int | None, str | None, str | None]:
-    """(chain_id, chain_name, store_name) of the user's default store."""
+) -> tuple[int | None, str | None, str | None, str | None]:
+    """(chain_id, chain_name, store_name, region_key) of the user's default store."""
     row = (
         await db.execute(
             select(
                 StoreLocation.chain_id,
                 SupportedChain.chain_name,
                 StoreLocation.store_name,
+                StoreLocation.region_key,
             )
             .join(UserStore, UserStore.store_location_id == StoreLocation.id)
             .join(SupportedChain, SupportedChain.id == StoreLocation.chain_id)
             .where(UserStore.user_id == user_id, UserStore.is_default.is_(True))
         )
     ).first()
-    return (row[0], row[1], row[2]) if row else (None, None, None)
+    return (row[0], row[1], row[2], row[3]) if row else (None, None, None, None)
 
 
 async def current_deals(
-    db: AsyncSession, chain_id: int, today: date
+    db: AsyncSession, chain_id: int, today: date, region_key: str | None = None
 ) -> list[DealCache]:
-    """Current-valid deals for a chain, best savings first."""
+    """Current-valid deals for a chain×region, best savings first."""
+    scope = (
+        DealCache.region_key == region_key
+        if region_key is not None
+        else DealCache.chain_id == chain_id
+    )
     return (
         (
             await db.execute(
                 select(DealCache)
                 .where(
-                    DealCache.chain_id == chain_id,
+                    scope,
                     DealCache.valid_to >= today,
                     or_(DealCache.valid_from <= today, DealCache.valid_from.is_(None)),
                 )
@@ -104,12 +110,12 @@ async def current_deals(
 
 
 async def _best_deal_by_ingredient(
-    db: AsyncSession, chain_id: int | None, today: date
+    db: AsyncSession, chain_id: int | None, today: date, region_key: str | None = None
 ) -> dict[int, DealCache]:
     if chain_id is None:
         return {}
     out: dict[int, DealCache] = {}
-    for d in await current_deals(db, chain_id, today):
+    for d in await current_deals(db, chain_id, today, region_key):
         iid = d.matched_ingredient_id
         if iid is None:
             continue
@@ -231,8 +237,8 @@ async def build_list(
             active_by_iid.setdefault(it.ingredient_id, it)
         active_by_norm.setdefault(ingredient_matcher._norm(it.name or ""), it)
 
-    chain_id, _chain_name, store_name = await default_chain(db, user.id)
-    deal_by_ingredient = await _best_deal_by_ingredient(db, chain_id, today)
+    chain_id, _chain_name, store_name, region_key = await default_chain(db, user.id)
+    deal_by_ingredient = await _best_deal_by_ingredient(db, chain_id, today, region_key)
 
     # 1. Collect ingredients from all of this week's recipes.
     rows = (

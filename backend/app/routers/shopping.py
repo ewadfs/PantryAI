@@ -123,10 +123,14 @@ async def current_list(
     on_list_ingredient_ids = {
         it.ingredient_id for it in items if it.ingredient_id is not None
     }
-    chain_id, _name, _store = await list_builder.default_chain(db, current_user.id)
+    chain_id, _name, _store, region_key = await list_builder.default_chain(
+        db, current_user.id
+    )
     also: list[AlsoOnSale] = []
     if chain_id is not None:
-        for d in await list_builder.current_deals(db, chain_id, date.today()):
+        for d in await list_builder.current_deals(
+            db, chain_id, date.today(), region_key
+        ):
             if d.id in on_list_deal_ids:
                 continue
             if (

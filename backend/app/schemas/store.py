@@ -34,3 +34,28 @@ class StoreSelectionUpdate(BaseModel):
 
     store_location_ids: list[int] = Field(default_factory=list, max_length=5)
     default_store_id: int | None = None
+
+
+class DiscoveredStore(BaseModel):
+    """A store surfaced by ZIP discovery, with deals-source status."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    store_name: str | None = None
+    address: str | None = None
+    city: str | None = None
+    state: str | None = None
+    zip_code: str | None = None
+    chain_id: int
+    chain_name: str
+    chain_slug: str
+    distance_miles: float | None = None
+    has_deals_source: bool = False
+    deals_status: str = "pending_source"
+
+
+class DiscoverResponse(BaseModel):
+    zip_code: str
+    source: str  # 'places' | 'catalog'
+    stores: list[DiscoveredStore]

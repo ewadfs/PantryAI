@@ -1,4 +1,5 @@
 from datetime import datetime
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -24,6 +25,7 @@ class UserRead(BaseModel):
     max_prep_time: int
     household_size: int
     taste_notes: str | None = None
+    recipes_per_generation: int
     created_at: datetime
     updated_at: datetime
 
@@ -46,3 +48,4 @@ class UserUpdate(BaseModel):
     max_prep_time: int | None = Field(default=None, ge=0, le=1440)
     household_size: int | None = Field(default=None, ge=1, le=50)
     taste_notes: str | None = Field(default=None, max_length=2000)
+    recipes_per_generation: Literal[3, 5] | None = None

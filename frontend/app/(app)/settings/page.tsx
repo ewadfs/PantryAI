@@ -83,6 +83,7 @@ export default function SettingsPage() {
       max_prep_time: form.max_prep_time,
       household_size: form.household_size,
       taste_notes: form.taste_notes,
+      recipes_per_generation: form.recipes_per_generation === 3 ? 3 : 5,
     };
     try {
       const updated = await updateMe(patch);
@@ -258,6 +259,27 @@ export default function SettingsPage() {
             className="input"
           />
           <span className="text-xs text-ink-faint">How many people each recipe should serve.</span>
+        </Field>
+
+        <Field label="Recipes per batch">
+          <div className="grid grid-cols-2 gap-2 rounded-2xl border border-hairline bg-surface p-1">
+            {([[3, "3 · faster"], [5, "5 · more choice"]] as [3 | 5, string][]).map(([n, label]) => {
+              const on = (form.recipes_per_generation === 3 ? 3 : 5) === n;
+              return (
+                <button
+                  key={n}
+                  onClick={() => set("recipes_per_generation", n)}
+                  aria-pressed={on}
+                  className={`h-11 rounded-xl text-sm font-semibold transition ${
+                    on ? "bg-brand text-white" : "text-ink-soft"
+                  }`}
+                >
+                  {label}
+                </button>
+              );
+            })}
+          </div>
+          <span className="text-xs text-ink-faint">How many dinner ideas the chef proposes each time.</span>
         </Field>
 
         <Field label="Tell the chef about your taste">

@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from sqlalchemy import DateTime, Integer, String, Text, func, text
+from sqlalchemy import DateTime, Integer, SmallInteger, String, Text, func, text
 from sqlalchemy.dialects.postgresql import ARRAY
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -52,6 +52,10 @@ class User(Base):
     )
     # Free-text taste profile injected verbatim into generation + the critic.
     taste_notes: Mapped[str | None] = mapped_column(Text)
+    # Recipes proposed per generation: 3 (faster) or 5 (more choice).
+    recipes_per_generation: Mapped[int] = mapped_column(
+        SmallInteger, nullable=False, server_default=text("5")
+    )
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()

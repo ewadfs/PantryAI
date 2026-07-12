@@ -14,6 +14,7 @@ import {
   saveToWeek,
 } from "@/lib/recipeApi";
 import { getMyStores, setDefaultStore } from "@/lib/storesApi";
+import { getMe } from "@/lib/userApi";
 import { listPantry } from "@/lib/pantryApi";
 import type { UserStore } from "@/lib/listTypes";
 import type { PantryItem } from "@/lib/types";
@@ -31,6 +32,11 @@ const STEPS = [
   "Checking this week's deals…",
   "Writing your recipes…",
 ];
+
+const TIER_RANK: Record<string, number> = { easy: 0, medium: 1, hard: 2 };
+function tierRank(d: string | null): number {
+  return TIER_RANK[(d ?? "").toLowerCase()] ?? 3;
+}
 
 function timeAgo(iso: string | null): string {
   if (!iso) return "";
@@ -69,6 +75,7 @@ export default function RecipesPage() {
   const [direction, setDirection] = useState("");
   const [batchDirection, setBatchDirection] = useState<string | null>(null);
   const [lastDirection, setLastDirection] = useState("");
+  const [perBatch, setPerBatch] = useState(5);
   const stepTimer = useRef<ReturnType<typeof setInterval> | null>(null);
   const pollTimer = useRef<ReturnType<typeof setInterval> | null>(null);
   const directionRef = useRef("");
@@ -173,6 +180,15 @@ export default function RecipesPage() {
     }
   }, []);
 
+  const loadProfile = useCallback(async () => {
+    try {
+      const me = await getMe();
+      if (me.recipes_per_generation) setPerBatch(me.recipes_per_generation);
+    } catch {
+      /* ignore — skeleton count falls back to default */
+    }
+  }, []);
+
   const pinsRef = useRef<Pin[]>([]);
   useEffect(() => {
     pinsRef.current = pins;
@@ -221,6 +237,7 @@ export default function RecipesPage() {
     loadWeek();
     loadStores();
     loadPantry();
+    loadProfile();
     const params =
       typeof window !== "undefined"
         ? new URLSearchParams(window.location.search)
@@ -420,7 +437,7 @@ export default function RecipesPage() {
           {/* Warm-load placeholder */}
           {warming && !recipes && !generating && (
             <div className="flex flex-col gap-4">
-              {[0, 1, 2].map((i) => (
+              {Array.from({ length: perBatch }, (_, i) => (
                 <SkeletonCard key={i} />
               ))}
             </div>
@@ -431,7 +448,7 @@ export default function RecipesPage() {
             <div className="rounded-2xl border border-hairline bg-surface p-6 text-center">
               <p className="text-base font-semibold text-ink">Tonight&apos;s dinner, sorted</p>
               <p className="mt-1 text-sm text-ink-soft">
-                Three options built from your pantry and this week&apos;s deals. Add a
+                {perBatch} options built from your pantry and this week&apos;s deals. Add a
                 direction below, or just tap ✨ Generate.
               </p>
             </div>
@@ -440,7 +457,7 @@ export default function RecipesPage() {
           {generating && (
             <div>
               <div className="flex flex-col gap-4">
-                {[0, 1, 2].map((i) => (
+                {Array.from({ length: perBatch }, (_, i) => (
                   <SkeletonCard key={i} />
                 ))}
               </div>
@@ -460,7 +477,9 @@ export default function RecipesPage() {
                 )
               )}
               <div className="flex flex-col gap-4">
-                {recipes.map((r) => (
+                {[...recipes]
+                  .sort((a, b) => tierRank(a.difficulty) - tierRank(b.difficulty))
+                  .map((r) => (
                   <RecipeCard
                     key={r.id}
                     recipe={r}

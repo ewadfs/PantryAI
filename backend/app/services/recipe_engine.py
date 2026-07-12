@@ -58,9 +58,10 @@ any brand in a SEPARATE nullable brand field. Never embed the brand in the name.
 
 _CONCEPT_SYSTEM = (
     """You are a skilled, creative home cook proposing tonight's dinner options for \
-a specific person. Propose exactly 3 recipe CONCEPTS: one easy (≤15 min active, \
-≤6 ingredients), one medium (15-30 min active), one hard (30+ min active, \
-impressive result). Concepts only — no full quantities or steps yet.
+a specific person. Propose exactly {n_concepts} recipe CONCEPTS with this difficulty \
+mix: {tier_plan}. Difficulty guide: easy = ≤15 min active & ≤6 ingredients; medium = \
+15-30 min active; hard = 30+ min active, impressive result. Order them easy → medium \
+→ hard. Concepts only — no full quantities or steps yet.
 
 Hard requirements:
 1. Respect ALL allergies and excluded ingredients — non-negotiable: {allergies_excluded}
@@ -71,6 +72,9 @@ Hard requirements:
 6. Lean toward their cuisines: {cuisine_preferences}; avoid repeating: {recent_titles}
 7. servings = {household_size}
 8. Assume pantry staples (salt, pepper, oils, common spices) are available.
+9. The {n_concepts} concepts must be mutually distinct dinners — each must differ \
+from EVERY other in this batch on at least TWO of the three signature axes \
+{{anchor_ingredient, dish_format, cuisine}}. No two near-identical dishes.
 
 """
     + _TECHNIQUE_RULES
@@ -233,6 +237,40 @@ def _protein_block(floor: int) -> str:
         "on-sale proteins — or discard the concept. Carb-anchored dishes must be "
         "protein-fortified, never served as-is."
     )
+
+
+_TIER_ORDER = ["easy", "medium", "hard"]
+_ALLOWED_N = (3, 5)
+
+
+def _clamp_n(n: int | None) -> int:
+    return n if n in _ALLOWED_N else 5
+
+
+def _tier_counts(n: int, difficulties: list[str] | None = None) -> dict[str, int]:
+    """Split N across selected tiers as evenly as possible; remainder to the
+    easiest selected tiers first. Default (no selection) = all three tiers."""
+    sel = [t for t in _TIER_ORDER if difficulties and t in difficulties]
+    if not sel:
+        sel = list(_TIER_ORDER)
+    base, rem = divmod(n, len(sel))
+    counts = {t: base for t in sel}
+    for i in range(rem):
+        counts[sel[i]] += 1  # easiest selected tier(s) get the remainder
+    return counts
+
+
+def _tier_list(n: int, difficulties: list[str] | None = None) -> list[str]:
+    counts = _tier_counts(n, difficulties)
+    out: list[str] = []
+    for t in _TIER_ORDER:
+        out += [t] * counts.get(t, 0)
+    return out
+
+
+def _tier_plan_text(n: int, difficulties: list[str] | None = None) -> str:
+    counts = _tier_counts(n, difficulties)
+    return ", ".join(f"{counts[t]} {t}" for t in _TIER_ORDER if counts.get(t))
 
 
 def _direction_block(direction: str | None) -> str:
@@ -842,11 +880,15 @@ async def _regen_concept(
         "quality below bar"
     )
     fails = review.get("fail_rubrics") or []
+    tier = (concept.get("difficulty") or "").strip() or "the same"
     correction = (
         f"\n\nREVISE ONE CONCEPT. A reviewer flagged it (score {review.get('score')}, "
         f"failed rubric(s) {fails}): {issues}. Return exactly one improved concept as "
         'JSON {"recipes":[{...single concept, same shape...}]}, fixing these specific '
-        "issues while keeping what already worked."
+        f"issues while keeping what already worked. Keep the SAME difficulty tier "
+        f"('{tier}'). Use ONLY ingredients actually in their kitchen or on the deals "
+        "list — never invent a protein or item the pantry doesn't show (the flagged "
+        "issue above is usually exactly this)."
     )
     prior = json.dumps(_concept_brief(concept), ensure_ascii=False)
     msg = f"{ctx_text}\n\nConcept to fix:\n{prior}\n\nReturn the fixed concept now."
@@ -924,14 +966,18 @@ async def _regen_for_variety(
 ) -> dict:
     s = _norm_sig(_concept_sig(concept))
     correction = (
-        "\n\nVARIETY VIOLATION: this concept repeats a recently shown dish on 2+ of "
+        "\n\nVARIETY VIOLATION: this concept repeats a recently shown dish — or another "
+        "concept in tonight's batch — on 2+ of "
         f"the three axes (dish_format={s['dish_format']!r}, anchor={s['anchor_ingredient']!r}, "
         f"cuisine={s['cuisine']!r}). Return ONE replacement concept as JSON "
         '{"recipes":[{...same shape...}]} that changes at least TWO of the three axes — '
         "a different dish_format AND/OR a different anchor_ingredient AND/OR a different "
         "cuisine, drawing on other pantry/deal items. If the pantry genuinely can't "
         "support a different anchor, keep it but change BOTH dish_format and cuisine, "
-        "and say so explicitly in why_this_recipe."
+        "and say so explicitly in why_this_recipe. "
+        f"Keep the SAME difficulty tier ('{(concept.get('difficulty') or '').strip() or 'the same'}'). "
+        "Use ONLY ingredients actually in their kitchen or on the deals list — never "
+        "invent a protein or item the pantry doesn't show."
     )
     prior = json.dumps(_concept_brief(concept), ensure_ascii=False)
     msg = f"{ctx_text}\n\nConcept that repeats:\n{prior}\n\nReturn the fresh concept now."
@@ -969,14 +1015,17 @@ async def _enforce_variety(
     for i, res in zip(collide, fixed):
         if isinstance(res, dict):
             concepts[i] = res
-    # A concept that still repeats a recent signature after its single retry ships
-    # anyway (spec: regenerate ONCE), but MUST honestly disclose the relaxation —
-    # append a note to why_this_recipe if the model didn't already say so.
+    # A concept that still repeats a recent signature — or another concept in this
+    # same batch — after its single retry ships anyway (spec: regenerate ONCE), but
+    # MUST honestly disclose the relaxation. Append a note to why_this_recipe if the
+    # model didn't already say so.
+    all_sigs = [_concept_sig(c) for c in concepts]
     _RELAX_MARKERS = ("another take", "too small", "reshapes", "same anchor",
                       "same shelf", "pantry can't", "pantry couldn't")
     for i in collide:
-        s = _norm_sig(_concept_sig(concepts[i]))
-        if any(_axes_shared(s, o) >= 2 for o in recent_sigs):
+        s = _norm_sig(all_sigs[i])
+        others = recent_sigs + [all_sigs[j] for j in range(len(concepts)) if j != i]
+        if any(_axes_shared(s, o) >= 2 for o in others):
             anchor = s.get("anchor_ingredient") or "a pantry staple"
             w = (concepts[i].get("why_this_recipe") or "").strip()
             if not any(m in w.lower() for m in _RELAX_MARKERS):
@@ -999,7 +1048,7 @@ async def generate_concepts(
     pinned_ids: list[int] | None = None,
     direction: str | None = None,
 ) -> list[Recipe]:
-    """One fast Claude call → 3 persisted concept recipes (status='concept')."""
+    """One fast Claude call → N persisted concept recipes (status='concept')."""
     pins = await _resolve_pins(db, user.id, pinned_ids or [])
     pin_dicts = _pin_dicts(pins)
     ctx = await _load_context(db, user)
@@ -1022,7 +1071,10 @@ async def generate_concepts(
         .all()
     )
 
+    n = _clamp_n(user.recipes_per_generation)
     system = _CONCEPT_SYSTEM.format(
+        n_concepts=n,
+        tier_plan=_tier_plan_text(n),
         allergies_excluded=(
             f"allergies={_fmt_list(user.allergies)}; "
             f"excluded={_fmt_list(user.excluded_ingredients)}"
@@ -1042,15 +1094,16 @@ async def generate_concepts(
         + ctx.variety_block
         + ctx.pin_block
     )
-    user_msg = ctx.context_text + "\n\nPropose tonight's 3 dinner concepts now."
+    user_msg = ctx.context_text + f"\n\nPropose tonight's {n} dinner concepts now."
 
     client = AsyncAnthropic(api_key=settings.anthropic_api_key)
     data = await _call_json(
-        client, model=settings.recipe_model, max_tokens=_CONCEPT_MAX_TOKENS,
+        client, model=settings.recipe_model,
+        max_tokens=max(_CONCEPT_MAX_TOKENS, 560 * n),
         system=full_system, user_msg=user_msg,
     )
     raw = [r for r in (data.get("recipes", []) if isinstance(data, dict) else [])
-           if isinstance(r, dict)][:3]
+           if isinstance(r, dict)][:n]
 
     # Stage 1.5 critic: score, then regenerate weak concepts once.
     critics: list[dict] = [{} for _ in raw]
@@ -1059,9 +1112,10 @@ async def generate_concepts(
             client, raw, ctx.protein_floor, _profile_text(user, ctx),
             full_system, user_msg, _pantry_qty_lines(ctx.pantry),
         )
-        # Variety guard: never re-serve a recent signature under a new name.
-        if recent_sigs:
-            raw = await _enforce_variety(client, raw, recent_sigs, full_system, user_msg)
+        # Variety guard: never re-serve a recent signature under a new name, and
+        # keep the batch mutually distinct (each concept differs from EVERY other
+        # on 2+ signature axes). Runs even with no history so intra-batch holds.
+        raw = await _enforce_variety(client, raw, recent_sigs, full_system, user_msg)
 
     persisted: list[Recipe] = []
     for r, critic in zip(raw, critics):

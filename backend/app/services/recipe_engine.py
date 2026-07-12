@@ -86,6 +86,11 @@ in this batch on at least TWO of the three signature axes \
 in more than 2 titles in a batch. Taste notes inform TECHNIQUE, not naming — \
 "loves char" means hard sears happen in the method, NOT that 'Charred' headlines \
 every title.
+11. INGREDIENT VARIETY — new concepts must not share more than about half their \
+non-staple ingredients with anything recently shown or saved this week, and a \
+distinctive seasoning blend may lead at most two concepts per batch. (Pinned \
+items, assigned market anchors, and purchases already planned for saved recipes \
+don't count as overlap.)
 
 """
     + _TECHNIQUE_RULES
@@ -96,8 +101,10 @@ generic_name, brand (null if none/store brand), in_pantry (bool), on_sale (bool)
 and sale_price only when on_sale.
 
 For each concept also give its SIGNATURE: anchor_ingredient (the single defining \
-pantry/deal item the dish is built around) and dish_format (one word: pasta, bowl, \
-roast, tacos, soup, skillet, stir-fry, salad, sandwich, bake, curry, stew, …). \
+pantry/deal item the dish is built around), dish_format (one word: pasta, bowl, \
+roast, tacos, soup, skillet, stir-fry, salad, sandwich, bake, curry, stew, …), and \
+flavor_lead — the 1-2 dominant seasonings or blends that define the dish \
+(e.g. "carne asada seasoning", "curry powder", "lemon-dill"). \
 total_time_min MUST include passive time (water boiling, oven preheat, rests) — a \
 "15 min" dish that needs a 20-min braise is a lie.
 
@@ -110,7 +117,8 @@ MARKET PICK (default false).
 Return ONLY valid JSON:
 {"recipes":[{title, description, difficulty, prep_time_min, cook_time_min, \
 total_time_min, servings, why_this_recipe, cuisine, dish_format, anchor_ingredient, \
-market_pick, tags:[...], nutrition_per_serving:{calories, protein_g}, \
+flavor_lead:[1-2 strings], market_pick, tags:[...], \
+nutrition_per_serving:{calories, protein_g}, \
 key_ingredients:[{generic_name, brand, in_pantry, on_sale, sale_price}]}]}"""
 )
 
@@ -608,6 +616,355 @@ def _protein_block(floor: int) -> str:
     )
 
 
+# --------------------------------------------------------------------------- #
+# Ingredient-overlap variety math (Prompt 33)
+# --------------------------------------------------------------------------- #
+# Violation thresholds: hard Jaccard cap, the lower same-anchor cap, and the
+# max concepts one flavor lead may head per batch.
+J_HARD = 0.6
+J_SAME_ANCHOR = 0.45
+LEAD_BATCH_MAX = 2
+
+# Fallback staple words for names that don't match ingredient_master — every
+# token generic ⇒ staple (salt, oils, water, basic baking).
+_STAPLE_TOKENS = {
+    "salt", "kosher", "sea", "pepper", "black", "peppercorn", "oil", "olive",
+    "vegetable", "canola", "cooking", "butter", "sugar", "flour", "water",
+    "spice", "spices",
+}
+
+
+def _ing_key(name: str) -> str | None:
+    """Stable identity for an ingredient name: the matched ingredient id when
+    there is one (normalizing through the 18-B4/32-3c qualifier stripper),
+    else the normalized name. None for empty names."""
+    if not name or not str(name).strip():
+        return None
+    clean = ingredient_matcher.normalize_flyer_name(str(name)) or str(name)
+    iid, _conf = ingredient_matcher.match_ingredient(clean)
+    if iid is None:
+        iid, _conf = ingredient_matcher.match_ingredient(str(name))
+    if iid is not None:
+        return f"i{iid}"
+    norm = ingredient_matcher._norm(clean)
+    return f"n:{norm}" if norm else None
+
+
+def _is_staple_name(name: str, key: str | None) -> bool:
+    """Staples (salt, oils, basic spices) don't count as overlap (P33 A1)."""
+    if key is not None and key.startswith("i"):
+        return ingredient_matcher.is_staple_id(int(key[1:]))
+    tokens = ingredient_matcher._tokens(name or "")
+    return bool(tokens) and all(t in _STAPLE_TOKENS for t in tokens)
+
+
+def _overlap_set(names: list[str], carveout: set[str]) -> set[str]:
+    """Normalized, NON-STAPLE ingredient keys, minus the carve-outs (pins,
+    market anchors, planned shared purchases — good overlap stays legal)."""
+    out: set[str] = set()
+    for name in names:
+        key = _ing_key(name)
+        if key is None or key in carveout or _is_staple_name(name, key):
+            continue
+        out.add(key)
+    return out
+
+
+def _jaccard(a: set[str], b: set[str]) -> float:
+    if not a or not b:
+        return 0.0
+    return len(a & b) / len(a | b)
+
+
+def _concept_ing_names(c: dict) -> list[str]:
+    return [
+        str(k.get("generic_name") or "")
+        for k in (c.get("key_ingredients") or [])
+        if isinstance(k, dict)
+    ]
+
+
+def _recipe_ing_names(r: Recipe) -> list[str]:
+    """A stored recipe's ingredient names — full list once detailed, else the
+    concept's key ingredients."""
+    src = r.ingredients_json or r.key_ingredients_json or []
+    return [
+        str(i.get("generic_name") or i.get("name") or "")
+        for i in src
+        if isinstance(i, dict)
+    ]
+
+
+def _flavor_leads(c: dict) -> list[str]:
+    """The concept's declared flavor lead(s), normalized, at most 2."""
+    raw = c.get("flavor_lead")
+    if isinstance(raw, str):
+        raw = [raw]
+    if not isinstance(raw, list):
+        return []
+    out = []
+    for x in raw[:2]:
+        s = str(x).strip().lower()
+        if s:
+            out.append(s[:60])
+    return out
+
+
+@dataclass
+class _OverlapEntry:
+    """One comparison target: a batchmate, a recent recipe, or a saved one."""
+
+    title: str
+    origin: str                 # "batch" | "recent" | "saved this week"
+    keys: set[str]
+    anchor_key: str | None
+
+
+def _entry_for_recipe(r: Recipe, carveout: set[str], origin: str) -> _OverlapEntry:
+    sig = r.signature_json if isinstance(r.signature_json, dict) else {}
+    return _OverlapEntry(
+        title=r.title,
+        origin=origin,
+        keys=_overlap_set(_recipe_ing_names(r), carveout),
+        anchor_key=_ing_key(str(sig.get("anchor_ingredient") or "")),
+    )
+
+
+async def _overlap_pool(
+    db: AsyncSession, user_id: int, carveout: set[str],
+    exclude_ids: set[int] | None = None,
+) -> list[_OverlapEntry]:
+    """Comparison targets outside the batch (P33 B3): all recipes from the
+    last 3 batches / 48h, plus the current week's saved recipes."""
+    exclude_ids = exclude_ids or set()
+    cutoff = _now() - timedelta(hours=_RECENT_HOURS)
+    recent = (
+        (
+            await db.execute(
+                select(Recipe)
+                .where(Recipe.user_id == user_id, Recipe.generated_at >= cutoff)
+                .order_by(Recipe.generated_at.desc())
+            )
+        )
+        .scalars()
+        .all()
+    )
+    batches: list[tuple[datetime, list[Recipe]]] = []
+    for r in recent:
+        if r.id in exclude_ids:
+            continue
+        if batches and batches[-1][0] == r.generated_at:
+            batches[-1][1].append(r)
+        else:
+            batches.append((r.generated_at, [r]))
+    entries = [
+        _entry_for_recipe(r, carveout, "recent")
+        for _ts, rs in batches[:_RECENT_BATCHES]
+        for r in rs
+    ]
+
+    saved = (
+        (
+            await db.execute(
+                select(Recipe)
+                .join(WeekRecipe, WeekRecipe.recipe_id == Recipe.id)
+                .where(
+                    WeekRecipe.user_id == user_id,
+                    WeekRecipe.week_start == week_start_for(date.today()),
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    seen_titles = {e.title for e in entries}
+    for r in saved:
+        if r.id in exclude_ids or r.title in seen_titles:
+            continue
+        entries.append(_entry_for_recipe(r, carveout, "saved this week"))
+    return entries
+
+
+def _saved_week_purchase_keys(saved: list[Recipe]) -> set[str]:
+    """Ingredients the user must PURCHASE for already-saved recipes this week —
+    shared purchases are shopping efficiency, not monotony (P33 B6)."""
+    keys: set[str] = set()
+    for r in saved:
+        for ing in r.ingredients_json or []:
+            if isinstance(ing, dict) and ing.get("in_pantry") is not True:
+                k = _ing_key(str(ing.get("generic_name") or ing.get("name") or ""))
+                if k is not None:
+                    keys.add(k)
+    return keys
+
+
+def _overlap_carveout(
+    pins: list[dict],
+    market_candidates: list[MarketCandidate],
+    purchase_keys: set[str],
+) -> set[str]:
+    """Keys excluded from every Jaccard set (P33 B6): pinned items, the
+    batch's market anchors, and this week's planned shared purchases."""
+    keys: set[str] = set(purchase_keys)
+    for p in pins:
+        k = _ing_key(str(p.get("name") or ""))
+        if k is not None:
+            keys.add(k)
+    for c in market_candidates:
+        keys.add(c.key)  # same key space (i{iid} / n:{norm})
+        k = _ing_key(c.clean_name or c.deal.product_name or "")
+        if k is not None:
+            keys.add(k)
+    return keys
+
+
+def _overlap_violation(
+    keys: set[str], anchor_key: str | None, entries: list[_OverlapEntry]
+) -> tuple[_OverlapEntry, float] | None:
+    """The worst comparison this concept violates (P33 B4), or None.
+    Violation = J > 0.6, OR (J > 0.45 AND same anchor)."""
+    worst: tuple[_OverlapEntry, float] | None = None
+    for e in entries:
+        j = _jaccard(keys, e.keys)
+        same_anchor = (
+            anchor_key is not None and e.anchor_key is not None
+            and anchor_key == e.anchor_key
+        )
+        if j > J_HARD or (j > J_SAME_ANCHOR and same_anchor):
+            if worst is None or j > worst[1]:
+                worst = (e, j)
+    return worst
+
+
+async def _regen_for_overlap(
+    client: AsyncAnthropic,
+    concept: dict,
+    reason: str,
+    base_system: list[dict] | str,
+    ctx_text: str,
+) -> dict:
+    tier = (concept.get("difficulty") or "").strip() or "the same"
+    correction = (
+        f"\n\nINGREDIENT OVERLAP VIOLATION: {reason} Return ONE replacement "
+        'concept as JSON {"recipes":[{...same shape...}]} that differs in '
+        "protein treatment, seasoning family, or dish format — not just the "
+        f"title. Keep the SAME difficulty tier ('{tier}'), and if this is a "
+        "MARKET PICK keep the SAME assigned anchor (the anchor never counts as "
+        "overlap). Use ONLY ingredients actually in their kitchen or on the "
+        "deals list."
+    )
+    prior = json.dumps(_concept_brief(concept), ensure_ascii=False)
+    msg = f"{ctx_text}{correction}\n\nConcept to replace:\n{prior}\n\nReturn the replacement now."
+    data = await _call_json(
+        client, model=settings.recipe_model, max_tokens=_CONCEPT_MAX_TOKENS,
+        system=base_system, user_msg=msg, category="generation", stage="concept_fix",
+    )
+    recs = data.get("recipes") if isinstance(data, dict) else None
+    if isinstance(recs, list) and recs and isinstance(recs[0], dict):
+        return recs[0]
+    return concept
+
+
+_OVERLAP_DISCLOSURE_MARKERS = ("shares", "close cousin", "overlap")
+
+
+def _disclose_overlap(concept_or_none: dict | None, recipe_or_none: Recipe | None,
+                      entry: _OverlapEntry, j: float) -> None:
+    """Existing disclosed-relaxation style (P33 B5): a post-retry survivor
+    ships, but never silently."""
+    note = (
+        f"Close cousin of {entry.title} ({round(j * 100)}% shared non-staple "
+        "ingredients) — kept after a retry; the pantry steers hard tonight."
+    )
+    if concept_or_none is not None:
+        w = (concept_or_none.get("why_this_recipe") or "").strip()
+        if not any(m in w.lower() for m in _OVERLAP_DISCLOSURE_MARKERS):
+            concept_or_none["why_this_recipe"] = f"{w} {note}".strip()
+    if recipe_or_none is not None:
+        w = (recipe_or_none.why_this_recipe or "").strip()
+        if not any(m in w.lower() for m in _OVERLAP_DISCLOSURE_MARKERS):
+            recipe_or_none.why_this_recipe = f"{w} {note}".strip()
+
+
+async def _enforce_ingredient_overlap(
+    client: AsyncAnthropic,
+    concepts: list[dict],
+    pool: list[_OverlapEntry],
+    carveout: set[str],
+    base_system: list[dict] | str,
+    ctx_text: str,
+) -> list[dict]:
+    """Deterministic ingredient-overlap check (P33 B): every concept vs its
+    batchmates + the recent/saved pool. Violations regenerate ONCE with the
+    overlapping recipe NAMED; survivors ship with the disclosure note. Also
+    enforces the flavor-lead cap (one lead heads at most 2 concepts/batch)."""
+
+    def concept_entry(i: int) -> _OverlapEntry:
+        c = concepts[i]
+        return _OverlapEntry(
+            title=str(c.get("title") or f"concept {i}"),
+            origin="batch",
+            keys=_overlap_set(_concept_ing_names(c), carveout),
+            anchor_key=_ing_key(str(c.get("anchor_ingredient") or "")),
+        )
+
+    def find_violations() -> dict[int, str]:
+        entries = [concept_entry(i) for i in range(len(concepts))]
+        reasons: dict[int, str] = {}
+        for i, e in enumerate(entries):
+            others = pool + [entries[j] for j in range(i)]  # earlier batchmates
+            hit = _overlap_violation(e.keys, e.anchor_key, others)
+            if hit is not None:
+                v, j = hit
+                reasons[i] = (
+                    f"this concept shares {round(j * 100)}% of its non-staple "
+                    f"ingredients with the {v.origin} recipe '{v.title}' "
+                    f"(limit {round(J_HARD * 100)}%, or "
+                    f"{round(J_SAME_ANCHOR * 100)}% with the same anchor)."
+                )
+        # Flavor-lead cap: one lead may head at most LEAD_BATCH_MAX concepts.
+        lead_where: dict[str, list[int]] = {}
+        for i, c in enumerate(concepts):
+            for lead in _flavor_leads(c):
+                lead_where.setdefault(lead, []).append(i)
+        for lead, idxs in lead_where.items():
+            for i in idxs[LEAD_BATCH_MAX:]:
+                reasons.setdefault(
+                    i,
+                    f"the flavor lead {lead!r} already leads "
+                    f"{LEAD_BATCH_MAX} other concepts in this batch "
+                    f"(max {LEAD_BATCH_MAX} per batch).",
+                )
+        return reasons
+
+    reasons = find_violations()
+    if not reasons:
+        return concepts
+    idxs = sorted(reasons)
+    fixed = await asyncio.gather(
+        *(
+            _regen_for_overlap(client, concepts[i], reasons[i], base_system, ctx_text)
+            for i in idxs
+        ),
+        return_exceptions=True,
+    )
+    for i, res in zip(idxs, fixed):
+        if isinstance(res, dict):
+            concepts[i] = res
+    logger.info("Ingredient overlap: regenerated %d concept(s): %s", len(idxs), idxs)
+
+    # Post-retry survivors ship, but disclosed (P33 B5).
+    entries = [concept_entry(i) for i in range(len(concepts))]
+    for i in idxs:
+        others = pool + [entries[j] for j in range(len(concepts)) if j != i]
+        hit = _overlap_violation(entries[i].keys, entries[i].anchor_key, others)
+        if hit is not None:
+            _disclose_overlap(concepts[i], None, hit[0], hit[1])
+            logger.info("Concept %r still overlaps %r (J=%.2f) after retry; "
+                        "disclosed", concepts[i].get("title"), hit[0].title, hit[1])
+    return concepts
+
+
 _TIER_ORDER = ["easy", "medium", "hard"]
 _ALLOWED_N = (3, 5)
 
@@ -803,6 +1160,10 @@ Judge against this rubric:
    the dish clearly needs more, without treating the extra as a purchase, FAILS.
 7. PROFILE FIT — matches stated cuisines/skill/max-prep AND the taste notes + rating
    history.
+8. INGREDIENT VARIETY — concepts must not share more than about half their
+   non-staple ingredients with another concept in the set, and no seasoning blend
+   (flavor_lead) may lead 3 or more concepts. (A deterministic checker enforces
+   exact thresholds afterward; flag the obvious near-clones.)
 
 Return ONLY valid JSON:
 {"reviews":[{"index":0-based, "score":1-10, "verdict":"ship"|"revise",
@@ -839,6 +1200,11 @@ class _Ctx:
     # Candidates designated as this batch's market-pick anchors (Prompt 28 A,
     # widened + per-slot assigned in Prompt 32 B).
     market_candidates: list[MarketCandidate] = field(default_factory=list)
+    # Ingredient-overlap variety math (Prompt 33): comparison targets (recent
+    # batches + saved week) and the carve-out key set (pins, market anchors,
+    # planned shared purchases).
+    overlap_pool: list[_OverlapEntry] = field(default_factory=list)
+    overlap_carveout: set[str] = field(default_factory=set)
 
 
 async def _resolve_pins(
@@ -1313,6 +1679,7 @@ def _concept_brief(c: dict) -> dict:
         "cuisine": c.get("cuisine"),
         "dish_format": c.get("dish_format"),
         "anchor_ingredient": c.get("anchor_ingredient"),
+        "flavor_lead": c.get("flavor_lead"),
         "total_time_min": c.get("total_time_min"),
         "protein_g": (c.get("nutrition_per_serving") or {}).get("protein_g")
         if isinstance(c.get("nutrition_per_serving"), dict)
@@ -2002,6 +2369,28 @@ async def generate_concepts(
         pool_exhausted,
     )
 
+    # Ingredient-overlap variety math (P33): carve out the good overlap (pins,
+    # this batch's market anchors, planned shared purchases for the saved
+    # week), then build the comparison pool (recent batches + saved week).
+    saved_week = (
+        (
+            await db.execute(
+                select(Recipe)
+                .join(WeekRecipe, WeekRecipe.recipe_id == Recipe.id)
+                .where(
+                    WeekRecipe.user_id == user.id,
+                    WeekRecipe.week_start == week_start_for(date.today()),
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    ctx.overlap_carveout = _overlap_carveout(
+        pin_dicts, ctx.market_candidates, _saved_week_purchase_keys(saved_week)
+    )
+    ctx.overlap_pool = await _overlap_pool(db, user.id, ctx.overlap_carveout)
+
     # Cache layers: L1 = static rules (_CONCEPT_SYSTEM), L2 = slow-changing
     # context (profile + protein floor + taste + rating history + pantry/deals).
     # Per-press variables (tier plan, recent titles, variety, direction, pins,
@@ -2087,6 +2476,13 @@ async def generate_concepts(
                 raw = await _enforce_slot_contract(
                     client, raw, requested_terms, ask_count, system_blocks, user_msg
                 )
+            # Ingredient-overlap variety math (P33 B): deterministic Jaccard +
+            # flavor-lead check vs batchmates, recent batches, and the saved
+            # week; one named regeneration, survivors disclosed.
+            raw = await _enforce_ingredient_overlap(
+                client, raw, ctx.overlap_pool, ctx.overlap_carveout,
+                system_blocks, user_msg,
+            )
             # Within-batch market anchor diversity (P32 B3): no two market picks
             # on the same anchor while unused candidates remain.
             raw = await _enforce_market_diversity(
@@ -2154,6 +2550,9 @@ async def generate_concepts(
                 "anchor_ingredient": r.get("anchor_ingredient"),
                 "dish_format": r.get("dish_format"),
                 "cuisine": cuisine,
+                # Dominant seasonings/blends (P33 A2) — persisted per recipe
+                # so future batches can compare flavor leads too.
+                "flavor_lead": _flavor_leads(r) or None,
             },
             is_market_pick=market_anchor is not None,
             market_anchor_json=market_anchor,
@@ -2472,7 +2871,87 @@ async def _fill_details(
         recipe.ai_model = settings.detail_model
         recipe.status = "ready"
 
+    # Ingredient-overlap RE-CHECK on the FULL ingredient lists (P33 B3 —
+    # concepts were checked on 4 key ingredients; details can drift). A
+    # violation at this stage ships with the disclosure note, never silently.
+    if ctx.overlap_pool or len(recipes) > 1:
+        entries = [
+            _entry_for_recipe(r, ctx.overlap_carveout, "batch") for r in recipes
+        ]
+        for i, recipe in enumerate(recipes):
+            others = [e for e in ctx.overlap_pool if e.title != recipe.title] + [
+                entries[j] for j in range(len(recipes)) if j != i
+            ]
+            hit = _overlap_violation(entries[i].keys, entries[i].anchor_key, others)
+            if hit is not None:
+                _disclose_overlap(None, recipe, hit[0], hit[1])
+                logger.warning(
+                    "Recipe %s (%r) post-detail ingredient overlap with %r "
+                    "(J=%.2f); disclosed",
+                    recipe.id, recipe.title, hit[0].title, hit[1],
+                )
+
     await db.flush()
+
+
+async def _load_detail_overlap(
+    db: AsyncSession, user_id: int, recipes: list[Recipe], ctx: _Ctx
+) -> None:
+    """Populate ctx.overlap_pool/carveout for a detail run (P33 recheck):
+    same carve-outs as Stage 1 (pins, the batch's market anchors, saved-week
+    purchases), pool = recent batches + saved week + the OTHER recipes of this
+    batch (lazy details may fill one recipe at a time)."""
+    batch_at = recipes[0].generated_at
+    batch = (
+        (
+            await db.execute(
+                select(Recipe).where(
+                    Recipe.user_id == user_id, Recipe.generated_at == batch_at
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    anchor_keys: set[str] = set()
+    for r in batch:
+        a = r.market_anchor_json
+        if isinstance(a, dict):
+            if isinstance(a.get("anchor_key"), str):
+                anchor_keys.add(a["anchor_key"])
+            k = _ing_key(str(a.get("name") or ""))
+            if k is not None:
+                anchor_keys.add(k)
+    saved_week = (
+        (
+            await db.execute(
+                select(Recipe)
+                .join(WeekRecipe, WeekRecipe.recipe_id == Recipe.id)
+                .where(
+                    WeekRecipe.user_id == user_id,
+                    WeekRecipe.week_start == week_start_for(date.today()),
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    carve = set(_saved_week_purchase_keys(saved_week)) | anchor_keys
+    for p in recipes[0].pinned_items_json or []:
+        if isinstance(p, dict):
+            k = _ing_key(str(p.get("name") or ""))
+            if k is not None:
+                carve.add(k)
+    ctx.overlap_carveout = carve
+    batch_ids = {r.id for r in batch}
+    pool = await _overlap_pool(db, user_id, carve, exclude_ids=batch_ids)
+    detail_ids = {r.id for r in recipes}
+    pool += [
+        _entry_for_recipe(r, carve, "batch")
+        for r in batch
+        if r.id not in detail_ids
+    ]
+    ctx.overlap_pool = pool
 
 
 async def run_details_bg(
@@ -2505,6 +2984,7 @@ async def run_details_bg(
         ctx = await _load_context(db, user)
         # Re-apply the batch's pin requirement to the detail stage.
         ctx.pin_block = _pin_block(recipes[0].pinned_items_json or [])
+        await _load_detail_overlap(db, user_id, recipes, ctx)
         batch_at = recipes[0].generated_at
         with ai_metering.metering(category, user_id=user_id, batch_at=batch_at) as events:
             await _fill_details(db, recipes, ctx, category=category)
@@ -2555,6 +3035,7 @@ async def warm_generate(user_id: int) -> None:
             eager_ids = set(_eager_detail_ids(recipes))
             eager = [r for r in recipes if r.id in eager_ids]
             ctx = await _load_context(db, user)
+            await _load_detail_overlap(db, user_id, eager, ctx)
             batch_at = recipes[0].generated_at
             with ai_metering.metering(
                 "pre-generation", user_id=user_id, batch_at=batch_at

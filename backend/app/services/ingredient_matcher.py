@@ -27,6 +27,9 @@ from app.models.ingredient import IngredientMaster
 # Cache entries: {"id", "exact": set[str], "aliases": set[str],
 #                 "token_sets": list[frozenset[str]]}
 _cache: list[dict] | None = None
+# Ingredient ids flagged is_pantry_staple (salt, oils, basic spices…) —
+# excluded from ingredient-overlap variety math (Prompt 33 A1).
+_staple_ids: set[int] = set()
 
 _TOKEN_RE = re.compile(r"[a-z0-9]+")
 _ACCEPT_THRESHOLD = 0.5
@@ -130,12 +133,15 @@ async def preload(db: AsyncSession) -> None:
                 IngredientMaster.canonical_name,
                 IngredientMaster.display_name,
                 IngredientMaster.common_aliases,
+                IngredientMaster.is_pantry_staple,
             )
         )
     ).all()
 
     cache: list[dict] = []
-    for id_, canonical, display, aliases in rows:
+    for id_, canonical, display, aliases, is_staple in rows:
+        if is_staple:
+            _staple_ids.add(id_)
         aliases = aliases or []
         exact = {_norm(canonical)}
         if display:
@@ -160,6 +166,13 @@ def _reset() -> None:
     """Clear the cache (test helper)."""
     global _cache
     _cache = None
+    _staple_ids.clear()
+
+
+def is_staple_id(ingredient_id: int | None) -> bool:
+    """Is this ingredient_master row flagged is_pantry_staple? Requires
+    :func:`preload`."""
+    return ingredient_id is not None and ingredient_id in _staple_ids
 
 
 def match_ingredient(name: str) -> tuple[int | None, float]:

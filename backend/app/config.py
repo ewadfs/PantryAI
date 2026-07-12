@@ -55,6 +55,14 @@ class Settings(BaseSettings):
     # Stage 2: full recipe details. Defaults to the same model but is
     # env-overridable (DETAIL_MODEL) so we can A/B a cheaper model later.
     detail_model: str = "claude-sonnet-4-6"
+    # Stage 1.5 critic. Haiku by default: measured >5s on Sonnet for 3 concepts,
+    # over the latency budget, and scoring is a cheap task. Override via CRITIC_MODEL
+    # (empty string → falls back to detail_model).
+    critic_model: str = "claude-haiku-4-5"
+
+    @property
+    def critic_model_id(self) -> str:
+        return self.critic_model or self.detail_model
 
     # CORS — comma-separated *extra* origins, merged with _DEFAULT_CORS_ORIGINS.
     # A bare "*" is ignored because it cannot be combined with credentials.

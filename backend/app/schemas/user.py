@@ -23,6 +23,7 @@ class UserRead(BaseModel):
     skill_level: str
     max_prep_time: int
     household_size: int
+    taste_notes: str | None = None
     created_at: datetime
     updated_at: datetime
 
@@ -44,3 +45,4 @@ class UserUpdate(BaseModel):
     skill_level: str | None = Field(default=None, max_length=20)
     max_prep_time: int | None = Field(default=None, ge=0, le=1440)
     household_size: int | None = Field(default=None, ge=1, le=50)
+    taste_notes: str | None = Field(default=None, max_length=2000)

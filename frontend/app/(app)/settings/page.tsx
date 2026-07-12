@@ -82,6 +82,7 @@ export default function SettingsPage() {
       skill_level: form.skill_level,
       max_prep_time: form.max_prep_time,
       household_size: form.household_size,
+      taste_notes: form.taste_notes,
     };
     try {
       const updated = await updateMe(patch);
@@ -257,6 +258,20 @@ export default function SettingsPage() {
             className="input"
           />
           <span className="text-xs text-ink-faint">How many people each recipe should serve.</span>
+        </Field>
+
+        <Field label="Tell the chef about your taste">
+          <textarea
+            value={form.taste_notes ?? ""}
+            onChange={(e) => set("taste_notes", e.target.value)}
+            placeholder="Anything goes — e.g. loves bold char, smoke, and heat; churrasco energy; hates mushy textures; weeknights = one pan."
+            rows={4}
+            maxLength={2000}
+            className="input min-h-[6rem] resize-y py-2 leading-relaxed"
+          />
+          <span className="text-xs text-ink-faint">
+            The chef reads this every time it builds your recipes.
+          </span>
         </Field>
 
         <button

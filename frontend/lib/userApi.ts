@@ -16,6 +16,7 @@ export type UserProfile = {
   skill_level: string;
   max_prep_time: number;
   household_size: number;
+  taste_notes: string | null;
 };
 
 export type UserUpdate = Partial<{
@@ -31,6 +32,7 @@ export type UserUpdate = Partial<{
   skill_level: string;
   max_prep_time: number;
   household_size: number;
+  taste_notes: string | null;
 }>;
 
 export const getMe = () => apiFetch<UserProfile>("/api/v1/me");

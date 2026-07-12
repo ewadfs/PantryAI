@@ -49,6 +49,10 @@ class Recipe(Base):
     # Pinned pantry items this batch was built around ("cook with this").
     pinned_items_json: Mapped[dict | list | None] = mapped_column(JSONB)
     ai_model: Mapped[str | None] = mapped_column(String(50))
+    # Critic pass (Stage 1.5): {score, worst_issues, verdict, fail_rubrics, regenerated}.
+    critic_json: Mapped[dict | list | None] = mapped_column(JSONB)
+    # Variety signature: {anchor_ingredient, dish_format, cuisine}.
+    signature_json: Mapped[dict | list | None] = mapped_column(JSONB)
     # rating: -1 thumbs down, 1 thumbs up, null unrated
     rating: Mapped[int | None] = mapped_column(SmallInteger)
     generated_at: Mapped[datetime] = mapped_column(

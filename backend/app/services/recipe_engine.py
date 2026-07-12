@@ -10,6 +10,7 @@ each) in the background, flipping status to 'ready'. Throughout we trust OUR
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import math
 from dataclasses import dataclass
@@ -75,13 +76,19 @@ For each concept give EXACTLY 4 key_ingredients — the defining ones — each w
 generic_name, brand (null if none/store brand), in_pantry (bool), on_sale (bool), \
 and sale_price only when on_sale.
 
+For each concept also give its SIGNATURE: anchor_ingredient (the single defining \
+pantry/deal item the dish is built around) and dish_format (one word: pasta, bowl, \
+roast, tacos, soup, skillet, stir-fry, salad, sandwich, bake, curry, stew, …). \
+total_time_min MUST include passive time (water boiling, oven preheat, rests) — a \
+"15 min" dish that needs a 20-min braise is a lie.
+
 BE TERSE — this is a fast preview, not the full recipe. description ≤ 12 words; \
 why_this_recipe ≤ 14 words; at most 3 tags. No extra prose or explanation.
 
 Return ONLY valid JSON:
 {{"recipes":[{{title, description, difficulty, prep_time_min, cook_time_min, \
-total_time_min, servings, why_this_recipe, cuisine, tags:[...], \
-nutrition_per_serving:{{calories, protein_g}}, \
+total_time_min, servings, why_this_recipe, cuisine, dish_format, anchor_ingredient, \
+tags:[...], nutrition_per_serving:{{calories, protein_g}}, \
 key_ingredients:[{{generic_name, brand, in_pantry, on_sale, sale_price}}]}}]}}"""
 )
 
@@ -224,6 +231,77 @@ def _protein_block(floor: int) -> str:
     )
 
 
+def _taste_block(taste_notes: str | None) -> str:
+    notes = (taste_notes or "").strip()
+    if not notes:
+        return ""
+    return (
+        "\n\nTHEIR TASTE (in their own words — weight this heavily, it is the single "
+        f"best signal of what they'll love): {notes}"
+    )
+
+
+def _history_block(loved: list[str], passed: list[str]) -> str:
+    if not loved and not passed:
+        return ""
+    parts = ["\n\nWHAT THEY THINK OF PAST RECIPES:"]
+    if loved:
+        parts.append("LOVED (👍 / cooked — rhyme with these flavor directions and "
+                     "formats, but do NOT repeat the titles):")
+        parts.extend(f"- {x}" for x in loved)
+    if passed:
+        parts.append("PASSED (👎 / skipped — avoid these patterns):")
+        parts.extend(f"- {x}" for x in passed)
+    return "\n".join(parts)
+
+
+def _variety_block(recent_sigs: list[str], skipped_sigs: list[str]) -> str:
+    if not recent_sigs and not skipped_sigs:
+        return ""
+    parts = ["\n\nRECENTLY SHOWN (do NOT re-serve these dishes under new names):"]
+    parts.extend(f"- {s}" for s in recent_sigs)
+    if skipped_sigs:
+        parts.append("The user regenerated past these without saving (soft negative — "
+                     "lean away):")
+        parts.extend(f"- {s}" for s in skipped_sigs)
+    parts.append(
+        "VARIETY RULE: each new concept must differ from every RECENTLY SHOWN "
+        "signature on at least TWO of the three axes {anchor_ingredient, dish_format, "
+        "cuisine}. Anchor this batch on different pantry/deal items than last time "
+        "where inventory allows. If your pantry is too small to satisfy this without "
+        "leaving the pantry, you MAY relax the anchor axis — but you MUST say so in "
+        "why_this_recipe (e.g. \"another take on your pasta shelf, but as a bake\")."
+    )
+    return "\n".join(parts)
+
+
+# --------------------------------------------------------------------------- #
+# Critic pass (Stage 1.5)
+# --------------------------------------------------------------------------- #
+_CRITIC_SYSTEM = """\
+You are a demanding culinary reviewer. You are given 3 dinner CONCEPTS and a diner
+profile. Score each concept 1-10 overall and flag which rubric items it fails.
+Judge against this rubric:
+
+1. TECHNIQUE PHYSICS — no wet/sugary marinades before a high-heat sear; ground
+   spices don't survive long hard sears (bloom later); "crispy" needs dry surfaces;
+   covered things don't crisp.
+2. FLAVOR COHERENCE — a defensible culinary logic (fusion fine, randomness not).
+3. STARCH/SHAPE LOGIC — chunky sauces get gripping shapes (rigatoni, penne), silky
+   sauces get ribbons; rice type matches the dish tradition where possible.
+4. PROTEIN FLOOR — per-serving protein ≥ the stated floor.
+5. TIME HONESTY — total_time_min must include passive time (boiling, preheat, rests).
+6. PANTRY REALISM — quantities implied must not exceed what the pantry plausibly holds.
+7. PROFILE FIT — matches stated cuisines/skill/max-prep AND the taste notes + rating
+   history.
+
+Return ONLY valid JSON:
+{"reviews":[{"index":0-based, "score":1-10, "verdict":"ship"|"revise",
+"fail_rubrics":[ints of failed rubric numbers], "worst_issues":[short strings]}]}
+Be strict: a concept that fails rubric 1, 4, or 5, or scores below 7 overall, is
+"revise"."""
+
+
 @dataclass
 class _Ctx:
     pantry: list[PantryItem]
@@ -233,6 +311,9 @@ class _Ctx:
     context_text: str
     pin_block: str = ""
     protein_floor: int = 0
+    taste_block: str = ""
+    history_block: str = ""
+    variety_block: str = ""
 
 
 async def _resolve_pins(
@@ -319,7 +400,158 @@ async def _load_context(db: AsyncSession, user: User) -> _Ctx:
     return _Ctx(
         pantry, chain_name, store_name, deal_by_ingredient, context_text,
         protein_floor=floor,
+        taste_block=_taste_block(user.taste_notes),
     )
+
+
+# --------------------------------------------------------------------------- #
+# Taste learning: rating history + variety signatures
+# --------------------------------------------------------------------------- #
+_HISTORY_LIMIT = 8
+_RECENT_BATCHES = 3
+_RECENT_HOURS = 48
+
+
+def _signature_of(recipe: Recipe) -> dict:
+    sig = recipe.signature_json if isinstance(recipe.signature_json, dict) else {}
+    return {
+        "anchor_ingredient": sig.get("anchor_ingredient"),
+        "dish_format": sig.get("dish_format"),
+        "cuisine": sig.get("cuisine") or recipe.cuisine,
+    }
+
+
+def _sig_str(sig: dict) -> str:
+    return (
+        f"{sig.get('dish_format') or '?'} · anchor: "
+        f"{sig.get('anchor_ingredient') or '?'} · {sig.get('cuisine') or 'any'} cuisine"
+    )
+
+
+def _recipe_signature_line(r: Recipe) -> str:
+    sig = r.why_this_recipe or r.description or ""
+    cuisine = f" [{r.cuisine}]" if r.cuisine else ""
+    return f"{r.title}{cuisine}: {sig}".strip()
+
+
+def _norm_sig(sig: dict) -> dict:
+    return {
+        k: (str(sig.get(k) or "")).strip().lower()
+        for k in ("anchor_ingredient", "dish_format", "cuisine")
+    }
+
+
+def _axes_shared(a: dict, b: dict) -> int:
+    """How many of the 3 signature axes two (normalized) signatures share."""
+    a, b = _norm_sig(a), _norm_sig(b)
+    return sum(1 for k in a if a[k] and a[k] == b[k])
+
+
+async def _build_taste_history(
+    db: AsyncSession, user_id: int
+) -> tuple[str, str, list[dict]]:
+    """(history_block, variety_block, recent_signatures) from ratings/cooked/batches."""
+    # LOVED: thumbs-up OR cooked. PASSED: thumbs-down.
+    loved_rows = (
+        (
+            await db.execute(
+                select(Recipe)
+                .where(Recipe.user_id == user_id, Recipe.rating == 1)
+                .order_by(Recipe.generated_at.desc())
+                .limit(_HISTORY_LIMIT)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    cooked_rows = (
+        (
+            await db.execute(
+                select(Recipe)
+                .join(WeekRecipe, WeekRecipe.recipe_id == Recipe.id)
+                .where(
+                    WeekRecipe.user_id == user_id,
+                    WeekRecipe.is_cooked.is_(True),
+                )
+                .order_by(WeekRecipe.cooked_at.desc())
+                .limit(_HISTORY_LIMIT)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    passed_rows = (
+        (
+            await db.execute(
+                select(Recipe)
+                .where(Recipe.user_id == user_id, Recipe.rating == -1)
+                .order_by(Recipe.generated_at.desc())
+                .limit(_HISTORY_LIMIT)
+            )
+        )
+        .scalars()
+        .all()
+    )
+
+    loved_seen: set[int] = set()
+    loved: list[str] = []
+    for r in [*cooked_rows, *loved_rows]:  # cooked first = strongest signal
+        if r.id in loved_seen:
+            continue
+        loved_seen.add(r.id)
+        loved.append(_recipe_signature_line(r))
+    passed = [_recipe_signature_line(r) for r in passed_rows]
+    history_block = _history_block(loved[:_HISTORY_LIMIT], passed)
+
+    # Variety: signatures from the last few batches (within 48h), and which of
+    # those batches were regenerated-past without any save (soft negatives).
+    cutoff = _now() - timedelta(hours=_RECENT_HOURS)
+    recent = (
+        (
+            await db.execute(
+                select(Recipe)
+                .where(
+                    Recipe.user_id == user_id,
+                    Recipe.generated_at >= cutoff,
+                )
+                .order_by(Recipe.generated_at.desc())
+            )
+        )
+        .scalars()
+        .all()
+    )
+    # Group into batches by generated_at; keep the most recent few.
+    batches: list[tuple[datetime, list[Recipe]]] = []
+    for r in recent:
+        if batches and batches[-1][0] == r.generated_at:
+            batches[-1][1].append(r)
+        else:
+            batches.append((r.generated_at, [r]))
+    batches = batches[:_RECENT_BATCHES]
+
+    saved_ids = set(
+        (
+            await db.execute(
+                select(WeekRecipe.recipe_id).where(WeekRecipe.user_id == user_id)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    recent_sigs: list[str] = []
+    skipped_sigs: list[str] = []
+    recent_struct: list[dict] = []
+    for _ts, recipes in batches:
+        batch_saved = any(r.id in saved_ids for r in recipes)
+        for r in recipes:
+            struct = _signature_of(r)
+            recent_struct.append(struct)
+            s = _sig_str(struct)
+            recent_sigs.append(s)
+            if not batch_saved:
+                skipped_sigs.append(s)
+    variety_block = _variety_block(recent_sigs, skipped_sigs)
+    return history_block, variety_block, recent_struct
 
 
 def _build_context(
@@ -456,6 +688,224 @@ def _reconcile_ingredients(
 
 
 # --------------------------------------------------------------------------- #
+# Critic pass helpers
+# --------------------------------------------------------------------------- #
+def _concept_brief(c: dict) -> dict:
+    return {
+        "title": c.get("title"),
+        "difficulty": c.get("difficulty"),
+        "cuisine": c.get("cuisine"),
+        "dish_format": c.get("dish_format"),
+        "anchor_ingredient": c.get("anchor_ingredient"),
+        "total_time_min": c.get("total_time_min"),
+        "protein_g": (c.get("nutrition_per_serving") or {}).get("protein_g")
+        if isinstance(c.get("nutrition_per_serving"), dict)
+        else None,
+        "description": c.get("description"),
+        "key_ingredients": [
+            k.get("generic_name")
+            for k in (c.get("key_ingredients") or [])
+            if isinstance(k, dict)
+        ],
+    }
+
+
+def _profile_text(user: User, ctx: _Ctx) -> str:
+    lines = [
+        f"cuisines: {_fmt_list(user.cuisine_preferences)}",
+        f"skill: {user.skill_level}; max prep: {user.max_prep_time} min",
+        f"diet: {user.diet_type}; allergies: {_fmt_list(user.allergies)}",
+    ]
+    return "\n".join(lines) + ctx.taste_block + ctx.history_block
+
+
+def _needs_revision(review: dict) -> bool:
+    try:
+        score = int(review.get("score"))
+    except (TypeError, ValueError):
+        score = 0
+    fails = {
+        int(x)
+        for x in (review.get("fail_rubrics") or [])
+        if str(x).strip().lstrip("-").isdigit()
+    }
+    hard = bool(fails & {1, 4, 5})
+    return score < 7 or hard or review.get("verdict") == "revise"
+
+
+async def _run_critic(
+    client: AsyncAnthropic, concepts: list[dict], floor: int, profile_text: str
+) -> list[dict]:
+    briefs = [_concept_brief(c) for c in concepts]
+    user_msg = (
+        f"PROTEIN FLOOR: {floor} g per serving.\n"
+        f"DINER PROFILE:\n{profile_text}\n\n"
+        f"CONCEPTS (0-indexed):\n{json.dumps(briefs, ensure_ascii=False)}\n\n"
+        "Review each concept now."
+    )
+    data = await _call_json(
+        client, model=settings.critic_model_id, max_tokens=1200,
+        system=_CRITIC_SYSTEM, user_msg=user_msg,
+    )
+    reviews = data.get("reviews") if isinstance(data, dict) else None
+    return reviews if isinstance(reviews, list) else []
+
+
+async def _regen_concept(
+    client: AsyncAnthropic, concept: dict, review: dict, base_system: str, ctx_text: str
+) -> dict:
+    issues = "; ".join(str(i) for i in (review.get("worst_issues") or [])) or (
+        "quality below bar"
+    )
+    fails = review.get("fail_rubrics") or []
+    correction = (
+        f"\n\nREVISE ONE CONCEPT. A reviewer flagged it (score {review.get('score')}, "
+        f"failed rubric(s) {fails}): {issues}. Return exactly one improved concept as "
+        'JSON {"recipes":[{...single concept, same shape...}]}, fixing these specific '
+        "issues while keeping what already worked."
+    )
+    prior = json.dumps(_concept_brief(concept), ensure_ascii=False)
+    msg = f"{ctx_text}\n\nConcept to fix:\n{prior}\n\nReturn the fixed concept now."
+    data = await _call_json(
+        client, model=settings.recipe_model, max_tokens=_CONCEPT_MAX_TOKENS,
+        system=base_system + correction, user_msg=msg,
+    )
+    recs = data.get("recipes") if isinstance(data, dict) else None
+    if isinstance(recs, list) and recs and isinstance(recs[0], dict):
+        return recs[0]
+    return concept  # regen failed — ship the original
+
+
+async def _critique_and_fix(
+    client: AsyncAnthropic,
+    concepts: list[dict],
+    floor: int,
+    profile_text: str,
+    base_system: str,
+    ctx_text: str,
+) -> tuple[list[dict], list[dict]]:
+    """Score concepts, regenerate weak ones once, return (concepts, critic_meta)."""
+    reviews = await _run_critic(client, concepts, floor, profile_text)
+    by_index: dict[int, dict] = {}
+    for rv in reviews:
+        if not isinstance(rv, dict):
+            continue
+        try:
+            by_index[int(rv.get("index"))] = rv
+        except (TypeError, ValueError):
+            continue
+
+    regen_idx = [
+        i for i in range(len(concepts))
+        if by_index.get(i) and _needs_revision(by_index[i])
+    ]
+    if regen_idx:
+        fixed = await asyncio.gather(
+            *(
+                _regen_concept(client, concepts[i], by_index[i], base_system, ctx_text)
+                for i in regen_idx
+            ),
+            return_exceptions=True,
+        )
+        for i, res in zip(regen_idx, fixed):
+            if isinstance(res, dict):
+                concepts[i] = res
+        logger.info("Critic regenerated %d/%d concepts: %s",
+                    len(regen_idx), len(concepts), regen_idx)
+
+    critics: list[dict] = []
+    for i in range(len(concepts)):
+        rv = by_index.get(i) or {}
+        critics.append({
+            "score": rv.get("score"),
+            "verdict": rv.get("verdict"),
+            "fail_rubrics": rv.get("fail_rubrics"),
+            "worst_issues": rv.get("worst_issues"),
+            "regenerated": i in regen_idx,
+        })
+    return concepts, critics
+
+
+def _concept_sig(c: dict) -> dict:
+    return {
+        "anchor_ingredient": c.get("anchor_ingredient"),
+        "dish_format": c.get("dish_format"),
+        "cuisine": c.get("cuisine"),
+    }
+
+
+async def _regen_for_variety(
+    client: AsyncAnthropic, concept: dict, base_system: str, ctx_text: str
+) -> dict:
+    s = _norm_sig(_concept_sig(concept))
+    correction = (
+        "\n\nVARIETY VIOLATION: this concept repeats a recently shown dish on 2+ of "
+        f"the three axes (dish_format={s['dish_format']!r}, anchor={s['anchor_ingredient']!r}, "
+        f"cuisine={s['cuisine']!r}). Return ONE replacement concept as JSON "
+        '{"recipes":[{...same shape...}]} that changes at least TWO of the three axes — '
+        "a different dish_format AND/OR a different anchor_ingredient AND/OR a different "
+        "cuisine, drawing on other pantry/deal items. If the pantry genuinely can't "
+        "support a different anchor, keep it but change BOTH dish_format and cuisine, "
+        "and say so explicitly in why_this_recipe."
+    )
+    prior = json.dumps(_concept_brief(concept), ensure_ascii=False)
+    msg = f"{ctx_text}\n\nConcept that repeats:\n{prior}\n\nReturn the fresh concept now."
+    data = await _call_json(
+        client, model=settings.recipe_model, max_tokens=_CONCEPT_MAX_TOKENS,
+        system=base_system + correction, user_msg=msg,
+    )
+    recs = data.get("recipes") if isinstance(data, dict) else None
+    if isinstance(recs, list) and recs and isinstance(recs[0], dict):
+        return recs[0]
+    return concept
+
+
+async def _enforce_variety(
+    client: AsyncAnthropic,
+    concepts: list[dict],
+    recent_sigs: list[dict],
+    base_system: str,
+    ctx_text: str,
+) -> list[dict]:
+    """Regenerate (once) any concept whose signature repeats a recent one — or an
+    earlier concept in this same batch — on 2+ of the 3 axes."""
+    sigs = [_concept_sig(c) for c in concepts]
+    collide: list[int] = []
+    for i, s in enumerate(sigs):
+        others = recent_sigs + [sigs[j] for j in range(len(sigs)) if j != i]
+        if any(_axes_shared(s, o) >= 2 for o in others):
+            collide.append(i)
+    if not collide:
+        return concepts
+    fixed = await asyncio.gather(
+        *(_regen_for_variety(client, concepts[i], base_system, ctx_text) for i in collide),
+        return_exceptions=True,
+    )
+    for i, res in zip(collide, fixed):
+        if isinstance(res, dict):
+            concepts[i] = res
+    # A concept that still repeats a recent signature after its single retry ships
+    # anyway (spec: regenerate ONCE), but MUST honestly disclose the relaxation —
+    # append a note to why_this_recipe if the model didn't already say so.
+    _RELAX_MARKERS = ("another take", "too small", "reshapes", "same anchor",
+                      "same shelf", "pantry can't", "pantry couldn't")
+    for i in collide:
+        s = _norm_sig(_concept_sig(concepts[i]))
+        if any(_axes_shared(s, o) >= 2 for o in recent_sigs):
+            anchor = s.get("anchor_ingredient") or "a pantry staple"
+            w = (concepts[i].get("why_this_recipe") or "").strip()
+            if not any(m in w.lower() for m in _RELAX_MARKERS):
+                note = (
+                    f"Another take on {anchor} — the pantry's too small for a fully "
+                    "fresh anchor tonight, so this reshapes it instead."
+                )
+                concepts[i]["why_this_recipe"] = f"{w} {note}".strip()
+            logger.info("Concept %r kept a repeated anchor after variety retry; "
+                        "relaxation disclosed", concepts[i].get("title"))
+    return concepts
+
+
+# --------------------------------------------------------------------------- #
 # Stage 1: concepts
 # --------------------------------------------------------------------------- #
 async def generate_concepts(
@@ -466,6 +916,9 @@ async def generate_concepts(
     pin_dicts = _pin_dicts(pins)
     ctx = await _load_context(db, user)
     ctx.pin_block = _pin_block(pin_dicts)
+    ctx.history_block, ctx.variety_block, recent_sigs = await _build_taste_history(
+        db, user.id
+    )
 
     recent_titles = (
         (
@@ -491,25 +944,43 @@ async def generate_concepts(
         recent_titles=_fmt_list(list(recent_titles)),
         household_size=user.household_size,
     )
+    full_system = (
+        system
+        + _protein_block(ctx.protein_floor)
+        + ctx.taste_block
+        + ctx.history_block
+        + ctx.variety_block
+        + ctx.pin_block
+    )
     user_msg = ctx.context_text + "\n\nPropose tonight's 3 dinner concepts now."
 
     client = AsyncAnthropic(api_key=settings.anthropic_api_key)
     data = await _call_json(
         client, model=settings.recipe_model, max_tokens=_CONCEPT_MAX_TOKENS,
-        system=system + _protein_block(ctx.protein_floor) + ctx.pin_block,
-        user_msg=user_msg,
+        system=full_system, user_msg=user_msg,
     )
-    raw = data.get("recipes", []) if isinstance(data, dict) else []
+    raw = [r for r in (data.get("recipes", []) if isinstance(data, dict) else [])
+           if isinstance(r, dict)][:3]
+
+    # Stage 1.5 critic: score, then regenerate weak concepts once.
+    critics: list[dict] = [{} for _ in raw]
+    if raw:
+        raw, critics = await _critique_and_fix(
+            client, raw, ctx.protein_floor, _profile_text(user, ctx),
+            full_system, user_msg,
+        )
+        # Variety guard: never re-serve a recent signature under a new name.
+        if recent_sigs:
+            raw = await _enforce_variety(client, raw, recent_sigs, full_system, user_msg)
 
     persisted: list[Recipe] = []
-    for r in raw[:3]:
-        if not isinstance(r, dict):
-            continue
+    for r, critic in zip(raw, critics):
         key_ings = [
             _reconcile_key(k, ctx.deal_by_ingredient, ctx.chain_name)
             for k in (r.get("key_ingredients") or [])
             if isinstance(k, dict)
         ]
+        cuisine = (r.get("cuisine") or None)
         recipe = Recipe(
             user_id=user.id,
             status="concept",
@@ -524,9 +995,15 @@ async def generate_concepts(
             nutrition_json=r.get("nutrition_per_serving"),
             why_this_recipe=r.get("why_this_recipe"),
             tags=r.get("tags"),
-            cuisine=(r.get("cuisine") or None),
+            cuisine=cuisine,
             generated_store_name=ctx.store_name,
             pinned_items_json=pin_dicts or None,
+            critic_json=critic or None,
+            signature_json={
+                "anchor_ingredient": r.get("anchor_ingredient"),
+                "dish_format": r.get("dish_format"),
+                "cuisine": cuisine,
+            },
             ai_model=settings.recipe_model,
         )
         db.add(recipe)

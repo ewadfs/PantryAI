@@ -50,6 +50,8 @@ class User(Base):
     household_size: Mapped[int] = mapped_column(
         Integer, nullable=False, server_default=text("4")
     )
+    # Free-text taste profile injected verbatim into generation + the critic.
+    taste_notes: Mapped[str | None] = mapped_column(Text)
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()

@@ -1,7 +1,9 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { forwardRef, useEffect, useState, type RefObject } from "react";
 import type { Difficulty } from "@/lib/recipeApi";
+import type { PantryItem } from "@/lib/types";
+import UseUpRow, { type Pin } from "./UseUpRow";
 
 const TIERS: { key: Difficulty; label: string }[] = [
   { key: "easy", label: "Easy" },
@@ -26,29 +28,34 @@ const EXAMPLES = [
 ];
 
 /**
- * Sticky bottom composer for the Discover tab: a direction input + Generate
- * button, pinned above the bottom tab bar. During generation it swaps to a
- * stepped progress strip. Stays above the on-screen keyboard via visualViewport.
+ * Top setup panel for the Discover tab (Prompt 29): a single grouped card
+ * holding all generation configuration — store chip, "use up" pins, difficulty
+ * chips, direction input, and the primary Generate button. Scrolls with content
+ * (not sticky). During generation the button swaps to the stepped progress strip.
  */
-export default function Composer({
-  value,
-  onChange,
-  onGenerate,
-  generating,
-  stepText,
-  lastDirection,
-  difficulties,
-  onToggleDifficulty,
-}: {
-  value: string;
-  onChange: (v: string) => void;
+const SetupPanel = forwardRef<HTMLDivElement, {
+  storeName: string | null;
+  onOpenStore: () => void;
+  pins: Pin[];
+  pantryItems: PantryItem[];
+  onAddPin: (p: Pin) => void;
+  onRemovePin: (id: number) => void;
+  difficulties: Difficulty[];
+  onToggleDifficulty: (d: Difficulty) => void;
+  direction: string;
+  onChangeDirection: (v: string) => void;
+  lastDirection: string;
+  directionRef: RefObject<HTMLInputElement | null>;
   onGenerate: () => void;
   generating: boolean;
   stepText: string;
-  lastDirection: string;
-  difficulties: Difficulty[];
-  onToggleDifficulty: (d: Difficulty) => void;
-}) {
+}>(function SetupPanel(props, ref) {
+  const {
+    storeName, onOpenStore, pins, pantryItems, onAddPin, onRemovePin,
+    difficulties, onToggleDifficulty, direction, onChangeDirection,
+    lastDirection, directionRef, onGenerate, generating, stepText,
+  } = props;
+
   // Transient shake when the user tries to turn off the last active tier.
   const [shake, setShake] = useState<Difficulty | null>(null);
   function toggle(d: Difficulty) {
@@ -60,6 +67,7 @@ export default function Composer({
     }
     onToggleDifficulty(d);
   }
+
   // Rotate the placeholder through examples until the user has generated once.
   const [ex, setEx] = useState(0);
   useEffect(() => {
@@ -68,35 +76,34 @@ export default function Composer({
     return () => clearInterval(t);
   }, [lastDirection]);
 
-  // Keep the composer above the on-screen keyboard.
-  const [kbInset, setKbInset] = useState(0);
-  useEffect(() => {
-    const vv = typeof window !== "undefined" ? window.visualViewport : null;
-    if (!vv) return;
-    const onResize = () => {
-      const overlap = window.innerHeight - (vv.height + vv.offsetTop);
-      setKbInset(Math.max(0, Math.round(overlap)));
-    };
-    vv.addEventListener("resize", onResize);
-    vv.addEventListener("scroll", onResize);
-    onResize();
-    return () => {
-      vv.removeEventListener("resize", onResize);
-      vv.removeEventListener("scroll", onResize);
-    };
-  }, []);
-
-  const placeholder = lastDirection
-    ? `again: “${lastDirection}”?`
-    : EXAMPLES[ex];
+  const placeholder = lastDirection ? `again: “${lastDirection}”?` : EXAMPLES[ex];
 
   return (
     <div
-      className={`fixed inset-x-0 z-40 mx-auto max-w-md border-t border-hairline bg-canvas/95 px-4 py-3 backdrop-blur ${
-        kbInset > 0 ? "" : "bottom-16"
-      }`}
-      style={kbInset > 0 ? { bottom: kbInset } : undefined}
+      ref={ref}
+      className="rounded-2xl border border-hairline bg-surface p-4 shadow-sm"
     >
+      {/* store chip */}
+      {storeName && (
+        <div className="mb-3 flex justify-end">
+          <button
+            onClick={onOpenStore}
+            className="flex shrink-0 items-center gap-1 rounded-full border border-hairline bg-canvas px-3 py-1.5 text-sm font-medium text-ink active:scale-[.98]"
+          >
+            📍 <span className="max-w-[10rem] truncate">{storeName}</span>
+            <span className="text-ink-faint">▾</span>
+          </button>
+        </div>
+      )}
+
+      {/* use-up pins */}
+      <UseUpRow
+        pins={pins}
+        pantryItems={pantryItems}
+        onAdd={onAddPin}
+        onRemove={onRemovePin}
+      />
+
       {generating ? (
         <div className="flex h-12 items-center justify-center gap-2 rounded-2xl bg-brand-soft px-4 text-sm font-medium text-brand-dark">
           <span className="inline-block h-2.5 w-2.5 animate-ping rounded-full bg-brand" />
@@ -130,17 +137,18 @@ export default function Composer({
             }}
             className="flex items-center gap-2"
           >
-          <input
-            value={value}
-            onChange={(e) => onChange(e.target.value.slice(0, 200))}
-            placeholder={placeholder}
-            enterKeyHint="go"
-            className="h-12 flex-1 rounded-2xl border border-hairline bg-surface px-4 text-base text-ink outline-none focus:border-brand"
-          />
-          <button
-            type="submit"
-            disabled={generating}
-            className="flex h-12 shrink-0 items-center gap-1 rounded-2xl bg-brand px-5 text-sm font-semibold text-white shadow-lg shadow-brand/25 transition active:scale-[.98] disabled:opacity-60"
+            <input
+              ref={directionRef}
+              value={direction}
+              onChange={(e) => onChangeDirection(e.target.value.slice(0, 200))}
+              placeholder={placeholder}
+              enterKeyHint="go"
+              className="h-12 flex-1 rounded-2xl border border-hairline bg-canvas px-4 text-base text-ink outline-none focus:border-brand"
+            />
+            <button
+              type="submit"
+              disabled={generating}
+              className="flex h-12 shrink-0 items-center gap-1 rounded-2xl bg-brand px-5 text-sm font-semibold text-white shadow-lg shadow-brand/25 transition active:scale-[.98] disabled:opacity-60"
             >
               ✨ Generate
             </button>
@@ -149,4 +157,6 @@ export default function Composer({
       )}
     </div>
   );
-}
+});
+
+export default SetupPanel;

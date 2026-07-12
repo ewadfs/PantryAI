@@ -25,8 +25,9 @@ import RecipeSheet from "@/components/recipes/RecipeSheet";
 import StoreSheet from "@/components/recipes/StoreSheet";
 import ThisWeek from "@/components/recipes/ThisWeek";
 import Confetti from "@/components/recipes/Confetti";
-import Composer from "@/components/recipes/Composer";
-import UseUpRow, { type Pin } from "@/components/recipes/UseUpRow";
+import SetupPanel from "@/components/recipes/SetupPanel";
+import GenerateMorePill from "@/components/recipes/GenerateMorePill";
+import { type Pin } from "@/components/recipes/UseUpRow";
 
 const STEPS = [
   "Reading your pantry…",
@@ -315,6 +316,30 @@ export default function RecipesPage() {
     };
   }, [generatedAt]);
 
+  // Setup-panel visibility (Prompt 29): the bottom "Generate more" pill appears
+  // only once the top setup panel has scrolled out of view.
+  const panelRef = useRef<HTMLDivElement | null>(null);
+  const directionInputRef = useRef<HTMLInputElement | null>(null);
+  const [panelVisible, setPanelVisible] = useState(true);
+  useEffect(() => {
+    const el = panelRef.current;
+    if (!el || typeof IntersectionObserver === "undefined") return;
+    const io = new IntersectionObserver(
+      ([entry]) => setPanelVisible(entry.isIntersecting),
+      // Treat the panel as "gone" once it tucks behind the sticky tabs header
+      // (~56px tall), so the pill appears right as the panel leaves view.
+      { threshold: 0, rootMargin: "-56px 0px 0px 0px" },
+    );
+    io.observe(el);
+    return () => io.disconnect();
+  }, [tab]);
+
+  function scrollToBrief() {
+    panelRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+    // focus the direction input once the smooth scroll has settled
+    window.setTimeout(() => directionInputRef.current?.focus(), 350);
+  }
+
   async function onSelectStore(id: number) {
     setSwitching(true);
     setError(null);
@@ -470,7 +495,7 @@ export default function RecipesPage() {
 
       <h1 className="mb-4 text-2xl font-bold text-ink">Recipes</h1>
 
-      {/* Tabs + (on Discover) store chip — sticky control cluster */}
+      {/* Tabs — sticky control cluster (store chip now lives in the setup panel) */}
       <div className="sticky top-0 z-20 -mx-5 bg-canvas/95 px-5 pb-3 pt-1 backdrop-blur">
         <div className="flex rounded-full border border-hairline bg-surface p-1">
           <button
@@ -499,18 +524,6 @@ export default function RecipesPage() {
             )}
           </button>
         </div>
-
-        {tab === "discover" && currentStoreName && (
-          <div className="mt-2 flex justify-end">
-            <button
-              onClick={() => setStoreSheet(true)}
-              className="flex shrink-0 items-center gap-1 rounded-full border border-hairline bg-surface px-3 py-1.5 text-sm font-medium text-ink active:scale-[.98]"
-            >
-              📍 <span className="max-w-[10rem] truncate">{currentStoreName}</span>
-              <span className="text-ink-faint">▾</span>
-            </button>
-          </div>
-        )}
       </div>
 
       {error && (
@@ -522,51 +535,56 @@ export default function RecipesPage() {
       {/* ---------- DISCOVER ---------- */}
       {tab === "discover" && (
         <div className="mt-4">
-          {!generating && (
-            <UseUpRow
-              pins={pins}
-              pantryItems={pantryItems}
-              onAdd={(p) =>
-                setPins((prev) =>
-                  prev.length < 3 && !prev.some((x) => x.id === p.id) ? [...prev, p] : prev,
-                )
-              }
-              onRemove={(id) => setPins((prev) => prev.filter((x) => x.id !== id))}
-            />
+          {/* TOP SETUP PANEL — all generation config lives here (scrolls with content) */}
+          <SetupPanel
+            ref={panelRef}
+            storeName={currentStoreName}
+            onOpenStore={() => setStoreSheet(true)}
+            pins={pins}
+            pantryItems={pantryItems}
+            onAddPin={(p) =>
+              setPins((prev) =>
+                prev.length < 3 && !prev.some((x) => x.id === p.id) ? [...prev, p] : prev,
+              )
+            }
+            onRemovePin={(id) => setPins((prev) => prev.filter((x) => x.id !== id))}
+            difficulties={difficulties}
+            onToggleDifficulty={toggleDifficulty}
+            direction={direction}
+            onChangeDirection={setDirection}
+            lastDirection={lastDirection}
+            directionRef={directionInputRef}
+            onGenerate={generate}
+            generating={generating}
+            stepText={STEPS[step]}
+          />
+
+          {/* Empty state: the panel IS the page, with a one-line explainer. */}
+          {!recipes && !generating && !warming && (
+            <p className="mt-3 text-center text-sm text-ink-soft">
+              Tell the chef anything — or just hit Generate.
+            </p>
           )}
 
           {/* Warm-load placeholder */}
           {warming && !recipes && !generating && (
-            <div className="flex flex-col gap-4">
+            <div className="mt-4 flex flex-col gap-4">
               {Array.from({ length: perBatch }, (_, i) => (
                 <SkeletonCard key={i} />
               ))}
             </div>
           )}
 
-          {/* Generate area — the composer below is the sole trigger */}
-          {!recipes && !generating && !warming && (
-            <div className="rounded-2xl border border-hairline bg-surface p-6 text-center">
-              <p className="text-base font-semibold text-ink">Tonight&apos;s dinner, sorted</p>
-              <p className="mt-1 text-sm text-ink-soft">
-                {perBatch} options built from your pantry and this week&apos;s deals. Add a
-                direction below, or just tap ✨ Generate.
-              </p>
-            </div>
-          )}
-
           {generating && (
-            <div>
-              <div className="flex flex-col gap-4">
-                {Array.from({ length: perBatch }, (_, i) => (
-                  <SkeletonCard key={i} />
-                ))}
-              </div>
+            <div className="mt-4 flex flex-col gap-4">
+              {Array.from({ length: perBatch }, (_, i) => (
+                <SkeletonCard key={i} />
+              ))}
             </div>
           )}
 
           {recipes && !generating && (
-            <div>
+            <div className="mt-4">
               {stale ? (
                 <div className="mb-3 rounded-xl bg-warn-soft px-4 py-3 text-sm text-warn">
                   These were built for {batchStore}. Tap ✨ Generate for fresh{" "}
@@ -595,8 +613,8 @@ export default function RecipesPage() {
             </div>
           )}
 
-          {/* room so the last card clears the sticky composer */}
-          <div className="h-32" />
+          {/* normal bottom padding (old sticky composer removed) */}
+          <div className="h-6" />
         </div>
       )}
 
@@ -642,16 +660,13 @@ export default function RecipesPage() {
         />
       )}
 
-      {tab === "discover" && (
-        <Composer
-          value={direction}
-          onChange={setDirection}
-          onGenerate={generate}
+      {/* Bottom "Generate more" pill — only once a batch exists AND the setup
+          panel has scrolled out of view. */}
+      {tab === "discover" && recipes && recipes.length > 0 && !panelVisible && (
+        <GenerateMorePill
+          onGenerateMore={generate}
+          onEditBrief={scrollToBrief}
           generating={generating}
-          stepText={STEPS[step]}
-          lastDirection={lastDirection}
-          difficulties={difficulties}
-          onToggleDifficulty={toggleDifficulty}
         />
       )}
 

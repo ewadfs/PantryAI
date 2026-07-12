@@ -81,7 +81,10 @@ Hard requirements:
 8. Assume pantry staples (salt, pepper, oils, common spices) are available.
 9. The concepts must be mutually distinct dinners — each must differ from EVERY other \
 in this batch on at least TWO of the three signature axes \
-{anchor_ingredient, dish_format, cuisine}. No two near-identical dishes.
+{anchor_ingredient, dish_format, cuisine}. No two near-identical dishes. AND: no \
+two concepts in a batch may share the same anchor_ingredient — one anchor, one \
+dish. Changing the format and cuisine does NOT license a second dish on the same \
+anchor.
 10. TITLE DIVERSITY — titles are distinct headlines: no signature word may appear \
 in more than 2 titles in a batch. Taste notes inform TECHNIQUE, not naming — \
 "loves char" means hard sears happen in the method, NOT that 'Charred' headlines \
@@ -421,8 +424,9 @@ class MarketCandidate:
 
 def _market_candidates(
     deals: list[DealCache],
-    pantry_iids: set[int],
-    pantry_norms: set[str],
+    pantry_by_iid: dict[int, PantryItem],
+    pantry_by_norm: dict[str, PantryItem],
+    household: int,
     store: str | None,
     cross_store: bool = False,
     exclude_terms: list[str] | None = None,
@@ -431,7 +435,14 @@ def _market_candidates(
     deals ∪ any current deal whose extraction category is meat/seafood/produce
     and whose name passes a light non-anchor sanity filter. Proteins rank
     first, then hero produce, by savings_pct with a null-safe fallback to
-    absolute price. Never something already in the pantry; distinct anchors.
+    absolute price. Distinct anchors.
+
+    Owned-item exclusion is QUANTITY-AWARE (the all-beef feed regression): a
+    deal is excluded only when the owned item could itself anchor a dinner
+    (P23 sufficiency). Owning one zucchini or 4 oz of chicken must not strike
+    every zucchini/chicken deal from the pool — with a large scanned pantry
+    that starves the pool to zero and the whole batch collapses onto one
+    pantry anchor.
 
     ``exclude_terms`` (Prompt 30): a counted direction caps categories, so
     surplus market picks must avoid the requested terms."""
@@ -460,8 +471,11 @@ def _market_candidates(
             continue  # anchor categories only, matched or not
         if _NON_ANCHOR_RE.search(name):
             continue  # breading, sauces, kits — not dinner anchors
-        # Never anchor on something the user already owns.
-        if (iid is not None and iid in pantry_iids) or (norm and norm in pantry_norms):
+        # Skip deals the user already owns ENOUGH of to anchor a dinner.
+        owned = (
+            pantry_by_iid.get(iid) if iid is not None else None
+        ) or pantry_by_norm.get(norm)
+        if owned is not None and _anchor_sufficient(owned, household):
             continue
 
         key = f"i{iid}" if iid is not None else f"n:{norm}"
@@ -693,7 +707,8 @@ def _perishable_block(item: PantryItem, use_soon: bool) -> str:
         f"\n\nOWNED-PERISHABLE SLOT — the user already owns {item.name} "
         f"(HAVE {qty}), which is perishable{flag if use_soon else ''}. "
         f"Exactly ONE concept in this batch (NOT a market pick) must be "
-        f'ANCHORED on it: set its anchor_ingredient to "{item.name}". '
+        f"ANCHORED on it — and ONLY that one; no other concept may anchor on "
+        f'{item.name}. Set that concept\'s anchor_ingredient to "{item.name}". '
         f"This slot is EXEMPT from the recently-shown anchor-variety rule — "
         f"{item.name} may anchor again tonight even if it anchored recently — "
         f"but the dish must still differ from recent {item.name} dishes in "
@@ -2461,6 +2476,106 @@ async def _enforce_market_diversity(
 
 
 # --------------------------------------------------------------------------- #
+# Within-batch anchor cap — one anchor, one dish (all-beef feed hotfix)
+# --------------------------------------------------------------------------- #
+async def _enforce_anchor_cap(
+    client: AsyncAnthropic,
+    concepts: list[dict],
+    cands: list[MarketCandidate],
+    pantry_iids: set[int],
+    base_system: list[dict] | str,
+    ctx_text: str,
+) -> list[dict]:
+    """No anchor_ingredient may anchor MORE THAN ONE concept in a batch.
+
+    The live all-beef feed proved rule 9's two-axis distinctness isn't enough:
+    when the market pool starves, the model legally ships five dishes on the
+    same pantry anchor by rotating format/cuisine ("two axes changed"). Market
+    picks already have per-deal distinctness (P32 B3 / P34 C6); this extends
+    one-anchor-one-dish to pantry anchors. Duplicates regenerate once onto a
+    DIFFERENT anchor; a survivor ships only with an honest exhaustion note.
+    Market-only duplicate groups are skipped — the market pass owns those
+    (disclosed exhaustion repeats)."""
+    def anchor_key(c: dict) -> str | None:
+        return _ing_key(str(c.get("anchor_ingredient") or ""))
+
+    def is_market(c: dict) -> bool:
+        return _match_candidate(
+            c.get("anchor_ingredient") or "", cands, pantry_iids
+        ) is not None
+
+    def find_dups() -> list[tuple[int, str]]:
+        groups: dict[str, list[int]] = {}
+        for i, c in enumerate(concepts):
+            k = anchor_key(c)
+            if k is not None:
+                groups.setdefault(k, []).append(i)
+        dups: list[tuple[int, str]] = []
+        for idxs in groups.values():
+            if len(idxs) <= 1:
+                continue
+            if all(is_market(concepts[i]) for i in idxs):
+                continue  # market diversity already resolved/disclosed these
+            keeper = next((i for i in idxs if is_market(concepts[i])), idxs[0])
+            anchor = str(concepts[keeper].get("anchor_ingredient") or "")
+            dups += [(i, anchor) for i in idxs if i != keeper]
+        return dups
+
+    dups = find_dups()
+    if not dups:
+        return concepts
+
+    async def regen(i: int, anchor: str) -> dict:
+        tier = (concepts[i].get("difficulty") or "").strip() or "the same"
+        correction = (
+            f"\n\nANCHOR CAP VIOLATION: {anchor} already anchors another "
+            "concept tonight — one anchor, one dish per batch. Return ONE "
+            'replacement concept as JSON {"recipes":[{...same shape...}]} '
+            f"anchored on a DIFFERENT item from their kitchen or the deals "
+            "list: a different protein, a hero vegetable, or a legume/egg/"
+            f"pasta-anchored dish. NEVER {anchor}, in any form. Keep the SAME "
+            f"difficulty tier ('{tier}')."
+        )
+        prior = json.dumps(_concept_brief(concepts[i]), ensure_ascii=False)
+        msg = (
+            f"{ctx_text}{correction}\n\nConcept to replace:\n{prior}\n\n"
+            "Return the replacement now."
+        )
+        data = await _call_json(
+            client, model=settings.recipe_model, max_tokens=_CONCEPT_MAX_TOKENS,
+            system=base_system, user_msg=msg, category="generation",
+            stage="concept_fix",
+        )
+        recs = data.get("recipes") if isinstance(data, dict) else None
+        if isinstance(recs, list) and recs and isinstance(recs[0], dict):
+            return recs[0]
+        return concepts[i]
+
+    fixed = await asyncio.gather(
+        *(regen(i, a) for i, a in dups), return_exceptions=True
+    )
+    for (i, _a), res in zip(dups, fixed):
+        if isinstance(res, dict):
+            concepts[i] = res
+    logger.info("Anchor cap: regenerated %d same-anchor concept(s): %s",
+                len(dups), [i for i, _ in dups])
+
+    # Verify; a stubborn survivor ships only with the honest exhaustion note.
+    for i, anchor in find_dups():
+        w = (concepts[i].get("why_this_recipe") or "").strip()
+        if "second" not in w.lower() and "anchor" not in w.lower():
+            note = (
+                f"A second {concepts[i].get('anchor_ingredient') or anchor} "
+                "dish tonight — nothing else in the kitchen or flyers could "
+                "anchor this slot."
+            )
+            concepts[i]["why_this_recipe"] = f"{w} {note}".strip()
+        logger.warning("Anchor cap: concept %r still duplicates anchor %r "
+                       "after retry; disclosed", concepts[i].get("title"), anchor)
+    return concepts
+
+
+# --------------------------------------------------------------------------- #
 # Title diversity (Prompt 32 D9)
 # --------------------------------------------------------------------------- #
 _TITLE_STOPWORDS = {
@@ -2622,16 +2737,16 @@ async def generate_concepts(
     if perishable is not None:
         market_slots = min(market_slots, n - 1)
     recent_market = await _recent_market_anchors(db, user.id)
-    pantry_norms = set(ctx.pantry_by_norm.keys())
     exclude_terms = requested_terms if enumerated else None
+    hh = user.household_size or 2
     primary_pool = _market_candidates(
-        ctx.all_deals, pantry_iids, pantry_norms, store=ctx.chain_name,
-        exclude_terms=exclude_terms,
+        ctx.all_deals, ctx.pantry_by_iid, ctx.pantry_by_norm, hh,
+        store=ctx.chain_name, exclude_terms=exclude_terms,
     )
     other_pools = [
         _market_candidates(
-            deals, pantry_iids, pantry_norms, store=name, cross_store=True,
-            exclude_terms=exclude_terms,
+            deals, ctx.pantry_by_iid, ctx.pantry_by_norm, hh,
+            store=name, cross_store=True, exclude_terms=exclude_terms,
         )
         for name, deals in ctx.other_store_deals
     ]
@@ -2699,6 +2814,24 @@ async def generate_concepts(
     perishable_block = (
         _perishable_block(perishable, perishable_use_soon) if perishable else ""
     )
+    # Deals starvation (the all-beef feed regression): when market slots were
+    # wanted but ZERO candidates exist, say so and forbid compensating by
+    # piling the batch onto one pantry anchor.
+    starved_block = ""
+    if market_slots > 0 and not ctx.market_candidates:
+        starved_block = (
+            "\n\nNO MARKET PICKS THIS BATCH — there are no usable store deals "
+            "right now. Do NOT compensate by building several concepts on the "
+            "same pantry anchor. Spread the batch across DIFFERENT anchors "
+            "from their kitchen: distinct proteins, hero vegetables, and "
+            "legume/egg/pasta-anchored dishes. One anchor, one dish."
+        )
+        logger.warning(
+            "Market slots=%d but the candidate pool is EMPTY for user %s — "
+            "deals starvation (stale flyers, or every anchorable deal is "
+            "sufficiently owned). Batch falls back to pantry anchors.",
+            market_slots, user.id,
+        )
     user_msg = (
         f"THIS BATCH: propose exactly {n} concepts with difficulty mix: "
         f"{_tier_plan_text(n, tiers)}.\n"
@@ -2706,6 +2839,7 @@ async def generate_concepts(
         + ctx.variety_block
         + perishable_block
         + market_block
+        + starved_block
         + _direction_block(ctx.direction, enumerated)
         + ctx.pin_block
         + f"\n\nPropose tonight's {n} dinner concepts now."
@@ -2797,6 +2931,13 @@ async def generate_concepts(
             # no two market picks on the same deal — and regen results are
             # verified, not trusted.
             raw = await _enforce_market_diversity(
+                client, raw, ctx.market_candidates, pantry_iids,
+                system_blocks, user_msg,
+            )
+            # One anchor, one dish (all-beef feed hotfix): rule 9's two-axis
+            # distinctness let five beef dishes ship by rotating format and
+            # cuisine; cap every anchor at one concept per batch.
+            raw = await _enforce_anchor_cap(
                 client, raw, ctx.market_candidates, pantry_iids,
                 system_blocks, user_msg,
             )

@@ -293,6 +293,8 @@ class _StubMessages:
             return _msg(self._retitle(user))
         if "CONCEPT to write in full" in user:
             return _msg(self._detail(user, sys_text))
+        if "ANCHOR CAP VIOLATION" in user:
+            return _msg({"recipes": [self._anchor_cap_regen()]})
         if "INGREDIENT OVERLAP VIOLATION" in user:
             return _msg({"recipes": [self._overlap_regen(user)]})
         if "VARIETY VIOLATION" in user:
@@ -367,6 +369,16 @@ class _StubMessages:
             c["key_ingredients"] = with_pin(c["key_ingredients"])
             pantry_concepts.append(c)
 
+        if not picks and n >= 4:
+            # The live regression facsimile: no market assignments -> the
+            # model piles the whole batch onto the one pantry anchor, legally
+            # rotating format/cuisine ("two axes changed"). The engine's
+            # anchor cap must break this up.
+            regression = self._regression_batch(n, tiers)
+            for c in regression:
+                c["key_ingredients"] = with_pin(c["key_ingredients"])
+            return {"recipes": regression}
+
         recipes = []
         for k, (name, price, unit, at_tail) in enumerate(picks[: n - len(pantry_concepts)]):
             clean = ingredient_matcher.normalize_flyer_name(name) or name
@@ -421,6 +433,100 @@ class _StubMessages:
         c["flavor_lead"] = brief.get("flavor_lead") or ["smoked paprika rub"]
         c["why_this_recipe"] = "Reworked format for variety."
         return c
+
+    _REGRESSION = [
+        ("BBQ Beef & Pinto Bean Stuffed Rolls", "sandwich", "american",
+         ["bbq rub"], ["canned pinto beans", "flour tortillas", "cheddar cheese"]),
+        ("Carne Asada Charred Beef & Black Bean Pasta Bake", "bake", "italian",
+         ["carne asada seasoning"],
+         ["canned black beans", "rigatoni", "mozzarella"]),
+        ("Seven-Spice Charred Beef & Chickpea Stuffed Rolls", "rolls",
+         "middle-eastern", ["seven-spice"],
+         ["canned chickpeas", "flour tortillas", "greek yogurt"]),
+        ("Carne Asada Beef & Canned Tomato Pasta Bake", "pasta", "tex-mex",
+         ["carne asada seasoning"],
+         ["canned diced tomatoes", "spaghetti", "sour cream"]),
+        ("Togarashi-Sesame Beef & Egg Stir-Fry with Charred Zucchini",
+         "stir-fry", "asian", ["togarashi-sesame"],
+         ["zucchini", "white rice", "soy sauce"]),
+    ]
+
+    def _regression_batch(self, n: int, tiers: list) -> list:
+        out = []
+        for k, (title, fmt, cuisine, lead, extras) in enumerate(
+            self._REGRESSION[:n]
+        ):
+            out.append({
+                "title": title,
+                "description": "Another spin on the pantry beef.",
+                "difficulty": tiers[min(k, n - 1)],
+                "prep_time_min": 10, "cook_time_min": 20, "total_time_min": 30,
+                "servings": 2,
+                "why_this_recipe": (
+                    "Same beef shelf, but format and cuisine differ — two "
+                    "axes changed."
+                ),
+                "cuisine": cuisine,
+                "dish_format": fmt,
+                "anchor_ingredient": "ground beef",
+                "flavor_lead": lead,
+                "market_pick": False,
+                "tags": ["pantry-first"],
+                "nutrition_per_serving": {"calories": 670, "protein_g": 55},
+                "key_ingredients": [
+                    {"generic_name": "ground beef", "brand": None,
+                     "in_pantry": True, "on_sale": False, "sale_price": None},
+                ] + [
+                    {"generic_name": x, "brand": None, "in_pantry": True,
+                     "on_sale": False, "sale_price": None}
+                    for x in extras
+                ],
+            })
+        return out
+
+    _FALLBACKS = [
+        ("Cheesy Rigatoni Marinara", "rigatoni", "pasta", "italian",
+         ["garlic-oregano marinara"],
+         ["canned diced tomatoes", "mozzarella", "parmesan cheese"]),
+        ("Smoky Black Bean Chili", "canned black beans", "stew", "tex-mex",
+         ["chipotle-cumin"],
+         ["canned diced tomatoes", "yellow onion", "chipotle peppers in adobo"]),
+        ("Crispy Potato & Bacon Hash", "baby potatoes", "skillet", "american",
+         ["black pepper & thyme"], ["bacon", "yellow onion", "cheddar cheese"]),
+        ("Charred Broccoli & Chickpea Roast", "broccoli", "roast",
+         "mediterranean", ["lemon-garlic"],
+         ["canned chickpeas", "lemon", "parmesan cheese"]),
+    ]
+    _cap_i = 0
+
+    def _anchor_cap_regen(self) -> dict:
+        title, anchor, fmt, cuisine, lead, extras = self._FALLBACKS[
+            self._cap_i % len(self._FALLBACKS)
+        ]
+        self._cap_i += 1
+        return {
+            "title": title,
+            "description": "A different pantry anchor entirely.",
+            "difficulty": "medium",
+            "prep_time_min": 10, "cook_time_min": 25, "total_time_min": 35,
+            "servings": 2,
+            "why_this_recipe": f"Anchored on {anchor} instead — no beef here.",
+            "cuisine": cuisine,
+            "dish_format": fmt,
+            "anchor_ingredient": anchor,
+            "flavor_lead": lead,
+            "market_pick": False,
+            "tags": ["pantry-first"],
+            "nutrition_per_serving": {"calories": 620, "protein_g": 55},
+            "key_ingredients": [
+                {"generic_name": anchor, "brand": None, "in_pantry": True,
+                 "on_sale": False, "sale_price": None},
+            ] + [
+                {"generic_name": x, "brand": None, "in_pantry": True,
+                 "on_sale": False, "sale_price": None}
+                for x in extras
+            ],
+        }
 
     def _overlap_regen(self, user: str) -> dict:
         """P33 regen: same dish, new seasoning direction (the correction asks
@@ -1220,10 +1326,38 @@ async def mini_checks() -> None:
               f"Beef market picks: {beef_market} — the flyer's beef deal is "
               f"fair game again once the owned beef is gone.")
 
-        # restore fixture state for repeatable reruns
+        # restore the beef before the starvation check
         beef.is_active = True
         beef.freshness = "good"
         await db.commit()
+
+        # (c) DEALS STARVATION -> anchor cap (the live all-beef regression).
+        # Wipe every golden flyer; the stub then proposes the exact all-beef
+        # batch from the field screenshots ("two axes changed") and the
+        # engine's one-anchor-one-dish cap must break it up.
+        await db.execute(
+            delete(DealCache).where(
+                DealCache.region_key.in_([v[2] for v in STORES.values()])
+            )
+        )
+        await db.commit()
+        concepts = await recipe_engine.generate_concepts(db, user)
+        await db.commit()
+        anchors = [
+            str((r.signature_json or {}).get("anchor_ingredient") or "?")
+            for r in concepts
+        ]
+        beef_n = sum(1 for a in anchors if "beef" in a)
+        distinct = len(set(anchors)) == len(anchors)
+        print("deals starved @ N=5 (flyers wiped; stub proposes the live "
+              "ALL-BEEF batch — 5× ground beef, formats/cuisines rotated):")
+        print(f"  anchors shipped: {anchors}")
+        print(f"  beef-anchored: {beef_n} (one anchor, one dish); "
+              f"anchors distinct: {'YES' if distinct else 'NO'}; "
+              f"market picks: {sum(1 for r in concepts if r.is_market_pick)}")
+        titles = [r.title for r in concepts]
+        over = recipe_engine._overused_title_words(titles)
+        print(f"  title-word check: {'CLEAN' if not over else 'VIOLATION ' + str(sorted(over))}")
 
 
 async def main() -> None:

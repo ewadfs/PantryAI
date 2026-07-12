@@ -134,13 +134,13 @@ pairwise Jaccard (non-staple sets, carve-outs removed):
   B3: Pork Loin Chops Weeknight Supper (batch)
   B4: Charred Atlantic Salmon Fillets Burgers (batch)
   B5: Chicken Thighs Family Feast (batch)
-  P1: Charred Cauliflower Curry (recent)
-  P2: Charred Beef Fajita Bowls (recent)
-  P3: Charred Cauliflower Power Bowl (recent)
-  P4: Charred Cauliflower Shawarma Wraps (recent)
+  P1: Charred Cauliflower Shawarma Wraps (recent)
+  P2: Charred Cauliflower Curry (recent)
+  P3: Charred Beef Fajita Bowls (recent)
+  P4: Charred Cauliflower Power Bowl (recent)
   P5: Weeknight Beef Ragu Rigatoni (saved this week)
         B1    B2    B3    B4    B5    P1    P2    P3    P4    P5
-  B1     —  0.00  0.00  0.00  0.00  0.00  0.00  0.00  0.12  0.00
+  B1     —  0.00  0.00  0.00  0.00  0.12  0.00  0.00  0.00  0.00
   B2  0.00     —  0.00  0.00  0.00  0.00  0.00  0.00  0.00  0.00
   B3  0.00  0.00     —  0.00  0.00  0.00  0.00  0.00  0.00  0.00
   B4  0.00  0.00  0.00     —  0.00  0.00  0.00  0.00  0.00  0.00
@@ -159,4 +159,8 @@ use_soon @ N=3: batch = 3 concepts (2 market picks); beef-anchored non-market: 1
   #1 Seared Beef & Green Beans Stir-Fry
   why leads with urgency: YES -> "Your ground beef should be used in the next day or two. A fast wok dinner from your kitche"
 beef consumed @ N=5: batch = 5 concepts (5 market picks); FORCED beef slot: 0 (guarantee inactive — nothing perishable left to protect). Beef market picks: 1 — the flyer's beef deal is fair game again once the owned beef is gone.
+deals starved @ N=5 (flyers wiped; stub proposes the live ALL-BEEF batch — 5× ground beef, formats/cuisines rotated):
+  anchors shipped: ['ground beef', 'rigatoni', 'canned black beans', 'baby potatoes', 'broccoli']
+  beef-anchored: 1 (one anchor, one dish); anchors distinct: YES; market picks: 0
+  title-word check: CLEAN
 

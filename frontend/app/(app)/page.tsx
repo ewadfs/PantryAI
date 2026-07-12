@@ -11,8 +11,21 @@ import { currentWeekStart } from "@/lib/week";
 import type { PantryListResponse } from "@/lib/types";
 import type { WeekResponse } from "@/lib/recipeTypes";
 import { getMe, firstName, type UserProfile } from "@/lib/userApi";
+import { getSavings, type SavingsResponse } from "@/lib/statsApi";
 
 const LAST_SCAN_KEY = "pantryai:lastScanAt";
+
+const MONTHS = [
+  "January", "February", "March", "April", "May", "June",
+  "July", "August", "September", "October", "November", "December",
+];
+
+function joinedMonth(iso: string | null | undefined): string {
+  if (!iso) return "you joined";
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "you joined";
+  return `${MONTHS[d.getMonth()]} ${d.getFullYear()}`;
+}
 
 function greeting(): string {
   const h = new Date().getHours();
@@ -41,23 +54,26 @@ export default function HomePage() {
   const [pantry, setPantry] = useState<PantryListResponse | null>(null);
   const [storeName, setStoreName] = useState<string | null>(null);
   const [week, setWeek] = useState<WeekResponse | null>(null);
+  const [savings, setSavings] = useState<SavingsResponse | null>(null);
   const [lastScan, setLastScan] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const [meRes, dealsRes, pantryRes, storesRes, weekRes] = await Promise.all([
+      const [meRes, dealsRes, pantryRes, storesRes, weekRes, savingsRes] = await Promise.all([
         getMe().catch(() => null),
         getTopDeals().catch(() => []),
         listPantry().catch(() => null),
         getMyStores().catch(() => []),
         getWeek(currentWeekStart()).catch(() => null),
+        getSavings().catch(() => null),
       ]);
       setMe(meRes);
       setDeals(dealsRes);
       setPantry(pantryRes);
       setStoreName((storesRes.find((s) => s.is_default) ?? storesRes[0])?.store?.store_name ?? null);
       setWeek(weekRes);
+      setSavings(savingsRes);
     } catch {
       toast.error("Couldn't load your home screen.", load);
     } finally {
@@ -127,6 +143,9 @@ export default function HomePage() {
             )}
           </section>
 
+          {/* Savings */}
+          <SavingsCard savings={savings} joinedIso={me?.created_at ?? null} />
+
           {/* Kitchen status */}
           <section className="rounded-2xl border border-hairline bg-surface p-5">
             <h2 className="text-base font-bold text-ink">Your kitchen</h2>
@@ -185,6 +204,57 @@ export default function HomePage() {
         </div>
       )}
     </div>
+  );
+}
+
+function SavingsCard({
+  savings,
+  joinedIso,
+}: {
+  savings: SavingsResponse | null;
+  joinedIso: string | null;
+}) {
+  // Empty state: no completed trips yet — no fake zeros dressed as data.
+  if (!savings || savings.all_time.trips === 0) {
+    return (
+      <section className="rounded-2xl border border-hairline bg-surface p-5">
+        <h2 className="text-base font-bold text-ink">💰 Your savings</h2>
+        <p className="mt-2 text-sm text-ink-soft">
+          Your savings show up here after your first shopping trip ✔
+        </p>
+      </section>
+    );
+  }
+
+  const a = savings.all_time;
+  const deals = num(a.deal_savings);
+  const pantry = num(a.pantry_value_used);
+  const total = deals + pantry;
+  const trips = a.trips;
+  const meals = savings.cooked_recipe_count;
+
+  const m = savings.this_month;
+  const monthTotal = num(m.deal_savings) + num(m.pantry_value_used);
+  const showMonth = m.trips > 0 && total - monthTotal >= 1;
+
+  return (
+    <section className="rounded-2xl border border-brand/30 bg-brand-soft p-5">
+      <p className="text-sm font-medium text-brand-dark">
+        💰 Saved <span className="text-lg font-bold">${total.toFixed(2)}</span> since{" "}
+        {joinedMonth(joinedIso)}
+      </p>
+      <p className="mt-2 text-sm text-brand-dark/90">
+        🏷️ ${deals.toFixed(2)} from deals · 🏠 ${pantry.toFixed(2)} of pantry put to work
+      </p>
+      <p className="mt-0.5 text-sm text-brand-dark/90">
+        {trips} trip{trips === 1 ? "" : "s"} · {meals} meal{meals === 1 ? "" : "s"} cooked
+      </p>
+      {showMonth && (
+        <p className="mt-2 text-xs font-medium text-brand-dark/80">
+          This month: ${monthTotal.toFixed(2)} saved
+        </p>
+      )}
+    </section>
   );
 }
 

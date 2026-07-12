@@ -6,7 +6,7 @@ from sqlalchemy import text
 
 from app.config import settings
 from app.database import engine
-from app.routers import auth, deals, pantry, prices, recipes, shopping, stores
+from app.routers import auth, deals, pantry, prices, recipes, shopping, stats, stores
 
 
 @asynccontextmanager
@@ -45,6 +45,7 @@ app.include_router(deals.router, prefix=API_PREFIX)
 app.include_router(recipes.router, prefix=API_PREFIX)
 app.include_router(shopping.router, prefix=API_PREFIX)
 app.include_router(prices.router, prefix=API_PREFIX)
+app.include_router(stats.router, prefix=API_PREFIX)
 
 
 @app.get("/")

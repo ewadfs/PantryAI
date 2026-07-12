@@ -17,6 +17,7 @@ export type UserProfile = {
   max_prep_time: number;
   household_size: number;
   taste_notes: string | null;
+  created_at?: string;
 };
 
 export type UserUpdate = Partial<{

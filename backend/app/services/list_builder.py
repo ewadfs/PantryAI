@@ -254,6 +254,10 @@ async def build_list(
     # key -> {unit_key -> aggregate}
     groups: dict[str, dict[str, dict]] = {}
     order: list[str] = []
+    # Value of pantry items these recipes reuse instead of buying — summed only
+    # where a current known price exists (honest math: unknowns count as nothing).
+    pantry_value = Decimal("0")
+    pantry_valued_iids: set[int] = set()
     for recipe in rows:
         for ing in recipe.ingredients_json or []:
             if not isinstance(ing, dict):
@@ -276,6 +280,12 @@ async def build_list(
             if is_staple:
                 continue
             if ing.get("in_pantry") and pantry_item is not None:
+                # Pantry put to work: credit its known price once per ingredient.
+                if iid is not None and iid not in pantry_valued_iids:
+                    deal = deal_by_ingredient.get(iid)
+                    if deal is not None and deal.sale_price is not None:
+                        pantry_value += deal.sale_price
+                        pantry_valued_iids.add(iid)
                 continue  # already have it
 
             key = f"id:{iid}" if iid is not None else f"nm:{norm}"
@@ -378,6 +388,7 @@ async def build_list(
     total, savings, count = compute_totals(items)
     shopping_list.total_known_cost = total
     shopping_list.deal_savings = savings
+    shopping_list.pantry_value_used = pantry_value.quantize(Decimal("0.01"))
     shopping_list.item_count = count
     await db.flush()
     return shopping_list, items

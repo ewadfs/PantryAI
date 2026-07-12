@@ -14,8 +14,12 @@ import {
 import { setDefaultStore } from "@/lib/storesApi";
 import { buildShoppingList } from "@/lib/recipeApi";
 import { comparePricesForList, type PriceCompareResponse } from "@/lib/pricesApi";
+import { getSavings, type SavingsResponse } from "@/lib/statsApi";
 import type { CurrentList, ShoppingItem } from "@/lib/listTypes";
 import ListRow from "@/components/list/ListRow";
+import Confetti from "@/components/recipes/Confetti";
+
+const MILESTONES = [25, 50, 100];
 
 function num(v: string | number | null | undefined): number {
   const n = Number(v ?? 0);
@@ -35,6 +39,8 @@ export default function ListPage() {
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [completing, setCompleting] = useState(false);
   const [completed, setCompleted] = useState<number | null>(null);
+  const [savings, setSavings] = useState<SavingsResponse | null>(null);
+  const [milestone, setMilestone] = useState(false);
 
   const load = useCallback(async () => {
     setError(null);
@@ -142,6 +148,16 @@ export default function ListPage() {
     try {
       const res = await completeList(list.id);
       setCompleted(res.items_added_to_pantry);
+      // Pull the fresh scoreboard for the trip line + milestone confetti.
+      try {
+        const s = await getSavings();
+        setSavings(s);
+        const after = num(s.all_time.deal_savings);
+        const before = after - num(s.last_trip?.deal_savings);
+        setMilestone(MILESTONES.some((m) => before < m && after >= m));
+      } catch {
+        /* scoreboard is a nice-to-have; never block completion */
+      }
     } catch (e) {
       setError(e instanceof Error ? e.message : "Could not complete the list.");
     } finally {
@@ -152,8 +168,12 @@ export default function ListPage() {
 
   // ---- success screen ----
   if (completed != null) {
+    const tripSavings = num(savings?.last_trip?.deal_savings);
+    const runningTotal =
+      num(savings?.all_time.deal_savings) + num(savings?.all_time.pantry_value_used);
     return (
       <div className="flex min-h-[70vh] flex-col items-center justify-center px-6 text-center">
+        {milestone && <Confetti onDone={() => setMilestone(false)} />}
         <span className="flex h-20 w-20 items-center justify-center rounded-full bg-brand text-white">
           <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
             <path d="M20 6 9 17l-5-5" />
@@ -163,6 +183,16 @@ export default function ListPage() {
         <p className="mt-1 text-sm text-ink-soft">
           {completed} item{completed === 1 ? "" : "s"} added to your pantry.
         </p>
+        {tripSavings > 0 && (
+          <div className="mt-5 w-full max-w-xs rounded-2xl border border-brand/30 bg-brand-soft p-4">
+            <p className="text-base font-bold text-brand-dark">
+              This trip: ${tripSavings.toFixed(2)} in deal savings 🏷️
+            </p>
+            <p className="mt-1 text-sm text-brand-dark/90">
+              ${runningTotal.toFixed(2)} saved with PantryAI so far
+            </p>
+          </div>
+        )}
         <p className="mt-4 max-w-xs text-sm text-ink-soft">
           📸 Scan your kitchen after unpacking for the best results.
         </p>

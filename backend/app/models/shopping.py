@@ -32,6 +32,8 @@ class ShoppingList(Base):
     priced_store_name: Mapped[str | None] = mapped_column(String(200))
     total_known_cost: Mapped[Decimal | None] = mapped_column(Numeric(10, 2))
     deal_savings: Mapped[Decimal | None] = mapped_column(Numeric(10, 2))
+    # Known market value of pantry items these recipes reused instead of buying.
+    pantry_value_used: Mapped[Decimal | None] = mapped_column(Numeric(10, 2))
     item_count: Mapped[int | None] = mapped_column(Integer)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()

@@ -25,8 +25,6 @@ export default function ThisWeek({
 
   return (
     <section className="mb-8">
-      <h2 className="mb-3 text-lg font-bold text-ink">This week</h2>
-
       <div className="flex flex-col gap-2">
         {rows.map((wr) => (
           <div

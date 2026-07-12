@@ -10,6 +10,8 @@ each) in the background, flipping status to 'ready'. Throughout we trust OUR
 from __future__ import annotations
 
 import asyncio
+import logging
+import math
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
@@ -27,6 +29,8 @@ from app.models.store import StoreLocation, SupportedChain, UserStore
 from app.models.user import User
 from app.services import ingredient_matcher
 from app.services.vision import _extract_json
+
+logger = logging.getLogger(__name__)
 
 _MEALS_PER_DAY = 3
 _CONCEPT_MAX_TOKENS = 1600     # terse concepts stay fast (few hundred tokens)
@@ -58,7 +62,7 @@ Hard requirements:
 2. Prioritize ingredients already in their kitchen; the best recipe buys the least.
 3. Use items flagged use_soon early and prominently.
 4. When something must be bought, strongly prefer items from the deals list and say so.
-5. Target ≈{calorie_per_serving} calories and ≈{protein_per_serving} g protein per serving.
+5. Target ≈{calorie_per_serving} calories per serving (protein has a hard floor below).
 6. Lean toward their cuisines: {cuisine_preferences}; avoid repeating: {recent_titles}
 7. servings = {household_size}
 8. Assume pantry staples (salt, pepper, oils, common spices) are available.
@@ -208,6 +212,18 @@ def _relevant_deals(deals: list[DealCache], pantry: list[PantryItem]) -> list[De
     return picked[:_CONTEXT_DEALS]
 
 
+def _protein_block(floor: int) -> str:
+    if floor <= 0:
+        return ""
+    return (
+        "\n\nProtein is a CONSTRAINT, not a target. Every recipe MUST deliver at "
+        f"least {floor} g protein per serving. If a pantry-driven concept falls "
+        "short, fortify it with a protein source — pantry proteins first, then "
+        "on-sale proteins — or discard the concept. Carb-anchored dishes must be "
+        "protein-fortified, never served as-is."
+    )
+
+
 @dataclass
 class _Ctx:
     pantry: list[PantryItem]
@@ -216,6 +232,7 @@ class _Ctx:
     deal_by_ingredient: dict[int, DealCache]
     context_text: str
     pin_block: str = ""
+    protein_floor: int = 0
 
 
 async def _resolve_pins(
@@ -298,7 +315,11 @@ async def _load_context(db: AsyncSession, user: User) -> _Ctx:
 
     relevant = _relevant_deals(all_deals, pantry)
     context_text = _build_context(pantry, relevant, chain_name, today)
-    return _Ctx(pantry, chain_name, store_name, deal_by_ingredient, context_text)
+    floor = math.ceil(user.protein_target / _MEALS_PER_DAY)
+    return _Ctx(
+        pantry, chain_name, store_name, deal_by_ingredient, context_text,
+        protein_floor=floor,
+    )
 
 
 def _build_context(
@@ -475,7 +496,8 @@ async def generate_concepts(
     client = AsyncAnthropic(api_key=settings.anthropic_api_key)
     data = await _call_json(
         client, model=settings.recipe_model, max_tokens=_CONCEPT_MAX_TOKENS,
-        system=system + ctx.pin_block, user_msg=user_msg,
+        system=system + _protein_block(ctx.protein_floor) + ctx.pin_block,
+        user_msg=user_msg,
     )
     raw = data.get("recipes", []) if isinstance(data, dict) else []
 
@@ -557,10 +579,26 @@ async def _call_json(
     return {}
 
 
+def _protein_of(data: dict) -> float | None:
+    n = data.get("nutrition_per_serving") if isinstance(data, dict) else None
+    if not isinstance(n, dict):
+        return None
+    try:
+        return float(n.get("protein_g"))
+    except (TypeError, ValueError):
+        return None
+
+
 async def _fill_details(db: AsyncSession, recipes: list[Recipe], ctx: _Ctx) -> None:
-    """Generate full details for concept recipes: parallel Claude, serial writes."""
+    """Generate full details for concept recipes: parallel Claude, serial writes.
+
+    Enforces the protein floor: a slot whose detail comes back under the floor
+    gets one corrective regeneration; if it still falls short we serve it but
+    log a warning (the prompt needs work, not the user's dinner blocked).
+    """
     client = AsyncAnthropic(api_key=settings.anthropic_api_key)
-    detail_system = _DETAIL_SYSTEM + ctx.pin_block
+    floor = ctx.protein_floor
+    detail_system = _DETAIL_SYSTEM + _protein_block(floor) + ctx.pin_block
     msgs = [_detail_user_msg(r, ctx) for r in recipes]
     results = await asyncio.gather(
         *(
@@ -573,8 +611,32 @@ async def _fill_details(db: AsyncSession, recipes: list[Recipe], ctx: _Ctx) -> N
         return_exceptions=True,
     )
 
-    for recipe, res in zip(recipes, results):
+    for i, (recipe, res) in enumerate(zip(recipes, results)):
         data = res if isinstance(res, dict) else {}
+
+        # Protein-floor validation: one corrective regeneration if short.
+        protein = _protein_of(data)
+        if floor > 0 and protein is not None and protein < floor:
+            correction = (
+                f"\n\nCORRECTION: your previous version delivered only {protein:.0f} g "
+                f"protein per serving, below the required {floor} g floor. Increase or "
+                "add a protein source (pantry proteins first, then on-sale) and "
+                "recompute the nutrition honestly."
+            )
+            retry = await _call_json(
+                client, model=settings.detail_model, max_tokens=_DETAIL_MAX_TOKENS,
+                system=detail_system + correction, user_msg=msgs[i],
+            )
+            if isinstance(retry, dict) and retry:
+                data = retry
+                protein = _protein_of(data)
+            if protein is None or protein < floor:
+                logger.warning(
+                    "Recipe %s (%r) protein %sg still below floor %dg after correction",
+                    recipe.id, recipe.title,
+                    "unknown" if protein is None else f"{protein:.0f}", floor,
+                )
+
         raw_ings = data.get("ingredients") if isinstance(data, dict) else None
         ingredients = _reconcile_ingredients(
             raw_ings or [], ctx.deal_by_ingredient, ctx.chain_name

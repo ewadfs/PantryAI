@@ -28,6 +28,7 @@ export type ConfirmItem = {
 };
 
 export type ConfirmRequest = {
+  mode: "replace" | "merge";
   confirmed: ConfirmItem[];
   removed?: string[];
   corrections?: { ai_said: string; user_said: string }[];

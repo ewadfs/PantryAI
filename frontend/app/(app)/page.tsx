@@ -176,7 +176,7 @@ export default function HomePage() {
               </p>
             )}
             <Link
-              href="/recipes"
+              href={savedRecipes.length === 0 ? "/recipes" : "/recipes?tab=week"}
               className="mt-4 flex h-11 w-full items-center justify-center rounded-xl border border-hairline bg-surface text-sm font-semibold text-ink active:scale-[.99]"
             >
               {savedRecipes.length === 0 ? "🍳 Get recipes" : "View recipes"}

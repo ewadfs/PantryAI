@@ -81,6 +81,7 @@ export default function SettingsPage() {
       excluded_ingredients: form.excluded_ingredients,
       skill_level: form.skill_level,
       max_prep_time: form.max_prep_time,
+      household_size: form.household_size,
     };
     try {
       const updated = await updateMe(patch);
@@ -243,6 +244,20 @@ export default function SettingsPage() {
             />
           </Field>
         </div>
+
+        <Field label="Household size">
+          <input
+            type="number"
+            min={1}
+            max={10}
+            value={form.household_size}
+            onChange={(e) =>
+              set("household_size", Math.max(1, Math.min(10, Number(e.target.value) || 1)))
+            }
+            className="input"
+          />
+          <span className="text-xs text-ink-faint">How many people each recipe should serve.</span>
+        </Field>
 
         <button
           onClick={saveProfile}

@@ -1,4 +1,5 @@
 from datetime import date
+from typing import Literal
 
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 
@@ -46,6 +47,10 @@ class Correction(BaseModel):
 class ConfirmRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
+    # replace = reconcile the whole pantry against this scan (absent non-staples
+    # are deactivated). merge = upsert confirmed items + explicit removals only;
+    # anything not in the scan is left untouched (fridge-only scans).
+    mode: Literal["replace", "merge"]
     confirmed: list[ConfirmItem] = Field(default_factory=list)
     removed: list[str] = Field(default_factory=list)
     corrections: list[Correction] = Field(default_factory=list)

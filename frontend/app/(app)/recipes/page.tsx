@@ -64,8 +64,17 @@ export default function RecipesPage() {
   const [pins, setPins] = useState<Pin[]>([]);
   const [pantryItems, setPantryItems] = useState<PantryItem[]>([]);
   const [batchPins, setBatchPins] = useState<string[]>([]);
+  const [tab, setTab] = useState<"discover" | "week">("discover");
   const stepTimer = useRef<ReturnType<typeof setInterval> | null>(null);
   const pollTimer = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  function selectTab(t: "discover" | "week") {
+    setTab(t);
+    if (typeof window !== "undefined") {
+      const url = t === "week" ? "/recipes?tab=week" : "/recipes";
+      window.history.replaceState({}, "", url);
+    }
+  }
 
   const currentStore = stores.find((s) => s.is_default) ?? stores[0] ?? null;
   const currentStoreName = currentStore?.store.store_name ?? null;
@@ -207,13 +216,18 @@ export default function RecipesPage() {
     const pinId = params.get("pin");
     if (pinId) {
       setPins([{ id: Number(pinId), name: params.get("name") || "item" }]);
-      window.history.replaceState({}, "", "/recipes");
+    }
+    // ?tab=week lands on This Week; a pin or generate implies Discover.
+    if (params.get("tab") === "week" && !pinId && params.get("generate") !== "1") {
+      setTab("week");
     }
     if (params.get("generate") === "1") {
       window.history.replaceState({}, "", "/recipes");
+      setTab("discover");
       setWarming(false);
       generate();
     } else {
+      if (pinId) window.history.replaceState({}, "", "/recipes");
       loadLatest();
     }
     return () => {
@@ -310,81 +324,56 @@ export default function RecipesPage() {
     }
   }
 
+  const weekCount = week?.recipes.length ?? 0;
+
   return (
     <div className="px-5 pt-8">
       {confetti && <Confetti onDone={() => setConfetti(false)} />}
 
-      <div className="mb-5 flex items-center justify-between gap-2">
-        <h1 className="text-2xl font-bold text-ink">Recipes</h1>
-        {currentStoreName && (
+      <h1 className="mb-4 text-2xl font-bold text-ink">Recipes</h1>
+
+      {/* Tabs + (on Discover) store chip — sticky control cluster */}
+      <div className="sticky top-0 z-20 -mx-5 bg-canvas/95 px-5 pb-3 pt-1 backdrop-blur">
+        <div className="flex rounded-full border border-hairline bg-surface p-1">
           <button
-            onClick={() => setStoreSheet(true)}
-            className="flex shrink-0 items-center gap-1 rounded-full border border-hairline bg-surface px-3 py-1.5 text-sm font-medium text-ink active:scale-[.98]"
+            onClick={() => selectTab("discover")}
+            className={`flex-1 rounded-full py-2 text-sm font-semibold transition ${
+              tab === "discover" ? "bg-brand text-white" : "text-ink-soft"
+            }`}
           >
-            📍 <span className="max-w-[10rem] truncate">{currentStoreName}</span>
-            <span className="text-ink-faint">▾</span>
+            Discover
           </button>
+          <button
+            onClick={() => selectTab("week")}
+            className={`flex flex-1 items-center justify-center gap-1.5 rounded-full py-2 text-sm font-semibold transition ${
+              tab === "week" ? "bg-brand text-white" : "text-ink-soft"
+            }`}
+          >
+            This week
+            {weekCount > 0 && (
+              <span
+                className={`flex h-5 min-w-5 items-center justify-center rounded-full px-1 text-xs font-bold ${
+                  tab === "week" ? "bg-white/25 text-white" : "bg-brand-soft text-brand-dark"
+                }`}
+              >
+                {weekCount}
+              </span>
+            )}
+          </button>
+        </div>
+
+        {tab === "discover" && currentStoreName && (
+          <div className="mt-2 flex justify-end">
+            <button
+              onClick={() => setStoreSheet(true)}
+              className="flex shrink-0 items-center gap-1 rounded-full border border-hairline bg-surface px-3 py-1.5 text-sm font-medium text-ink active:scale-[.98]"
+            >
+              📍 <span className="max-w-[10rem] truncate">{currentStoreName}</span>
+              <span className="text-ink-faint">▾</span>
+            </button>
+          </div>
         )}
       </div>
-
-      <ThisWeek
-        week={week}
-        cookingId={cookingId}
-        buildingList={buildingList}
-        onCooked={onCooked}
-        onRemove={onRemove}
-        onOpen={setSelected}
-        onBuildList={onBuildList}
-      />
-
-      {!generating && (
-        <UseUpRow
-          pins={pins}
-          pantryItems={pantryItems}
-          onAdd={(p) =>
-            setPins((prev) =>
-              prev.length < 3 && !prev.some((x) => x.id === p.id) ? [...prev, p] : prev,
-            )
-          }
-          onRemove={(id) => setPins((prev) => prev.filter((x) => x.id !== id))}
-        />
-      )}
-
-      {/* Warm-load placeholder */}
-      {warming && !recipes && !generating && (
-        <div className="flex flex-col gap-4">
-          {[0, 1, 2].map((i) => (
-            <SkeletonCard key={i} />
-          ))}
-        </div>
-      )}
-
-      {/* Generate area */}
-      {!recipes && !generating && !warming && (
-        <div className="rounded-2xl border border-hairline bg-surface p-6 text-center">
-          <p className="text-base font-semibold text-ink">Tonight&apos;s dinner, sorted</p>
-          <p className="mt-1 text-sm text-ink-soft">
-            Three options built from your pantry and this week&apos;s deals.
-          </p>
-          <button
-            onClick={generate}
-            className="mt-5 flex h-14 w-full items-center justify-center rounded-2xl bg-brand text-base font-semibold text-white shadow-lg shadow-brand/25 active:scale-[.99]"
-          >
-            {pinLabel ?? "🍳 Generate 3 recipes"}
-          </button>
-        </div>
-      )}
-
-      {generating && (
-        <div>
-          <p className="mb-4 text-center text-sm font-medium text-ink-soft">{STEPS[step]}</p>
-          <div className="flex flex-col gap-4">
-            {[0, 1, 2].map((i) => (
-              <SkeletonCard key={i} />
-            ))}
-          </div>
-        </div>
-      )}
 
       {error && (
         <p className="mt-4 rounded-xl bg-warn-soft px-4 py-3 text-sm text-warn" role="alert">
@@ -392,47 +381,133 @@ export default function RecipesPage() {
         </p>
       )}
 
-      {recipes && !generating && (
-        <div>
-          {batchPins.length > 0 && (
-            <p className="mb-2 text-sm font-semibold text-brand-dark">
-              Built around: {batchPins.join(", ")}
-            </p>
+      {/* ---------- DISCOVER ---------- */}
+      {tab === "discover" && (
+        <div className="mt-4">
+          {!generating && (
+            <UseUpRow
+              pins={pins}
+              pantryItems={pantryItems}
+              onAdd={(p) =>
+                setPins((prev) =>
+                  prev.length < 3 && !prev.some((x) => x.id === p.id) ? [...prev, p] : prev,
+                )
+              }
+              onRemove={(id) => setPins((prev) => prev.filter((x) => x.id !== id))}
+            />
           )}
-          {stale ? (
-            <div className="mb-3 rounded-xl bg-warn-soft px-4 py-3 text-sm text-warn">
-              These were generated for {batchStore}. New {currentStoreName} recipes
-              are on the way…
+
+          {/* Warm-load placeholder */}
+          {warming && !recipes && !generating && (
+            <div className="flex flex-col gap-4">
+              {[0, 1, 2].map((i) => (
+                <SkeletonCard key={i} />
+              ))}
             </div>
-          ) : (
-            generatedAt && (
-              <p className="mb-3 text-xs text-ink-faint">Generated {timeAgo(generatedAt)}</p>
-            )
           )}
-          <div className="flex flex-col gap-4">
-            {recipes.map((r) => (
-              <RecipeCard
-                key={r.id}
-                recipe={r}
-                saved={savedIds.has(r.id)}
-                savstate={savingId === r.id ? "saving" : "idle"}
-                onSave={() => onSave(r.id)}
-                onRate={(rating) => onRate(r.id, rating)}
-                onExpand={() => setSelected(r)}
-              />
-            ))}
-          </div>
-          <button
-            onClick={generate}
-            className={`mt-4 flex h-12 w-full items-center justify-center rounded-2xl text-sm font-semibold active:scale-[.99] ${
-              pinLabel || stale
-                ? "bg-brand text-white shadow-lg shadow-brand/25"
-                : "border border-hairline bg-surface text-ink"
-            }`}
-          >
-            {pinLabel ??
-              (stale ? `Get ${currentStoreName} recipes` : "Show me different options")}
-          </button>
+
+          {/* Generate area */}
+          {!recipes && !generating && !warming && (
+            <div className="rounded-2xl border border-hairline bg-surface p-6 text-center">
+              <p className="text-base font-semibold text-ink">Tonight&apos;s dinner, sorted</p>
+              <p className="mt-1 text-sm text-ink-soft">
+                Three options built from your pantry and this week&apos;s deals.
+              </p>
+              <button
+                onClick={generate}
+                className="mt-5 flex h-14 w-full items-center justify-center rounded-2xl bg-brand text-base font-semibold text-white shadow-lg shadow-brand/25 active:scale-[.99]"
+              >
+                {pinLabel ?? "🍳 Generate 3 recipes"}
+              </button>
+            </div>
+          )}
+
+          {generating && (
+            <div>
+              <p className="mb-4 text-center text-sm font-medium text-ink-soft">{STEPS[step]}</p>
+              <div className="flex flex-col gap-4">
+                {[0, 1, 2].map((i) => (
+                  <SkeletonCard key={i} />
+                ))}
+              </div>
+            </div>
+          )}
+
+          {recipes && !generating && (
+            <div>
+              {batchPins.length > 0 && (
+                <p className="mb-2 text-sm font-semibold text-brand-dark">
+                  Built around: {batchPins.join(", ")}
+                </p>
+              )}
+              {stale ? (
+                <div className="mb-3 rounded-xl bg-warn-soft px-4 py-3 text-sm text-warn">
+                  These were generated for {batchStore}. New {currentStoreName} recipes
+                  are on the way…
+                </div>
+              ) : (
+                generatedAt && (
+                  <p className="mb-3 text-xs text-ink-faint">Generated {timeAgo(generatedAt)}</p>
+                )
+              )}
+              <div className="flex flex-col gap-4">
+                {recipes.map((r) => (
+                  <RecipeCard
+                    key={r.id}
+                    recipe={r}
+                    saved={savedIds.has(r.id)}
+                    savstate={savingId === r.id ? "saving" : "idle"}
+                    onSave={() => onSave(r.id)}
+                    onRate={(rating) => onRate(r.id, rating)}
+                    onExpand={() => setSelected(r)}
+                  />
+                ))}
+              </div>
+              <button
+                onClick={generate}
+                className={`mt-4 flex h-12 w-full items-center justify-center rounded-2xl text-sm font-semibold active:scale-[.99] ${
+                  pinLabel || stale
+                    ? "bg-brand text-white shadow-lg shadow-brand/25"
+                    : "border border-hairline bg-surface text-ink"
+                }`}
+              >
+                {pinLabel ??
+                  (stale ? `Get ${currentStoreName} recipes` : "Show me different options")}
+              </button>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ---------- THIS WEEK ---------- */}
+      {tab === "week" && (
+        <div className="mt-4">
+          {weekCount > 0 ? (
+            <ThisWeek
+              week={week}
+              cookingId={cookingId}
+              buildingList={buildingList}
+              onCooked={onCooked}
+              onRemove={onRemove}
+              onOpen={setSelected}
+              onBuildList={onBuildList}
+            />
+          ) : (
+            <div className="rounded-2xl border border-hairline bg-surface p-8 text-center">
+              <div className="text-4xl" aria-hidden>🍽️</div>
+              <p className="mt-3 text-base font-semibold text-ink">Nothing saved yet</p>
+              <p className="mt-1 text-sm text-ink-soft">
+                Discover recipes and tap <span className="font-semibold">Save</span> to add them to
+                this week&apos;s plan.
+              </p>
+              <button
+                onClick={() => selectTab("discover")}
+                className="mt-5 flex h-12 w-full items-center justify-center rounded-2xl bg-brand text-sm font-semibold text-white active:scale-[.99]"
+              >
+                Discover recipes
+              </button>
+            </div>
+          )}
         </div>
       )}
 

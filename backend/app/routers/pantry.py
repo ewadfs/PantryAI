@@ -176,15 +176,21 @@ async def confirm_scan(
                 )
             )
 
-    # Deactivate active items the user didn't confirm (staples are kept).
+    # Deactivate items. In "replace" mode, active non-staples missing from the
+    # scan are dropped (full-kitchen reconcile). In "merge" mode, only the
+    # explicitly-removed items are dropped — absent items are left untouched
+    # (so a fridge-only scan never wipes the dry-goods shelf).
     removed_keys = {
         ingredient_matcher._norm(n) for n in payload.removed if n.strip()
     }
     removed_count = 0
     for key, item in by_name.items():
-        drop = key in removed_keys or (
-            key not in confirmed_keys and not item.is_staple
-        )
+        if payload.mode == "replace":
+            drop = key in removed_keys or (
+                key not in confirmed_keys and not item.is_staple
+            )
+        else:  # merge
+            drop = key in removed_keys
         if drop and item.is_active:
             item.is_active = False
             item.consumed_at = now

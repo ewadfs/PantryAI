@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { getRecipe } from "@/lib/recipeApi";
+import { comparePricesForRecipe, type PriceCompareResponse } from "@/lib/pricesApi";
 import type { Recipe } from "@/lib/recipeTypes";
 import { DifficultyPill, metaLine, nutritionLine } from "./ui";
 
@@ -49,6 +50,59 @@ function IngredientRow({ ing }: { ing: LooseIng }) {
   );
 }
 
+function money(v: string | number) {
+  return `$${Number(v).toFixed(2)}`;
+}
+
+function BuyAtRow({ prices }: { prices: PriceCompareResponse }) {
+  // Anchor store (default) first, then the rest as returned by the backend.
+  const stores = [...prices.stores].sort(
+    (a, b) => Number(b.is_default) - Number(a.is_default),
+  );
+  return (
+    <div className="mt-4 rounded-2xl border border-hairline bg-canvas p-3">
+      <div className="flex items-baseline justify-between">
+        <p className="text-xs font-semibold uppercase tracking-wide text-ink-faint">
+          Buy at
+        </p>
+        <p className="text-[11px] text-ink-faint">
+          known deals · {prices.needed_count} to buy
+        </p>
+      </div>
+      <div className="mt-2 flex gap-4 overflow-x-auto whitespace-nowrap pb-1">
+        {stores.map((s) => {
+          const name = s.chain_name ?? s.store_name ?? "Store";
+          const hasPrices = s.priced_count > 0;
+          return (
+            <div key={s.store_id} className="shrink-0">
+              <p className={`text-sm font-medium ${s.is_default ? "text-brand-dark" : "text-ink"}`}>
+                {name}
+                {s.is_default && <span className="ml-1 text-[11px]">• this week</span>}
+              </p>
+              <p className="text-sm">
+                {hasPrices ? (
+                  <span className="font-semibold text-ink">{money(s.known_cost_sum)}</span>
+                ) : (
+                  <span className="text-ink-faint">—</span>
+                )}
+                {s.unpriced_count > 0 && (
+                  <span className="ml-1 text-[11px] text-ink-faint">
+                    +{s.unpriced_count} unpriced
+                  </span>
+                )}
+              </p>
+            </div>
+          );
+        })}
+      </div>
+      <p className="mt-1 text-[11px] text-ink-faint">
+        Prices shown come from current flyers. “—” means no deal listed there, not
+        that it isn’t sold.
+      </p>
+    </div>
+  );
+}
+
 export default function RecipeSheet({
   recipe,
   saved,
@@ -61,6 +115,7 @@ export default function RecipeSheet({
   onClose: () => void;
 }) {
   const [data, setData] = useState<Recipe>(recipe);
+  const [prices, setPrices] = useState<PriceCompareResponse | null>(null);
   const timer = useRef<ReturnType<typeof setInterval> | null>(null);
 
   useEffect(() => setData(recipe), [recipe]);
@@ -91,6 +146,25 @@ export default function RecipeSheet({
       if (timer.current) clearInterval(timer.current);
     };
   }, [data.status, data.id]);
+
+  // Fetch cross-store prices once the recipe is ready and needs ≥1 purchase.
+  const needsBuying =
+    data.status === "ready" &&
+    data.ingredients.some((ing) => !(ing as LooseIng).in_pantry);
+  useEffect(() => {
+    if (!needsBuying) return;
+    let cancelled = false;
+    comparePricesForRecipe(data.id)
+      .then((res) => {
+        if (!cancelled) setPrices(res);
+      })
+      .catch(() => {
+        /* pricing is best-effort */
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [needsBuying, data.id]);
 
   const n = data.nutrition_per_serving;
   const isConcept = data.status === "concept" || data.ingredients.length === 0;
@@ -131,6 +205,10 @@ export default function RecipeSheet({
             <span>🏷️ on sale</span>
             <span>🛒 need</span>
           </div>
+
+          {prices && prices.needed_count > 0 && prices.stores.length > 0 && (
+            <BuyAtRow prices={prices} />
+          )}
 
           {isConcept ? (
             <div className="mt-6">

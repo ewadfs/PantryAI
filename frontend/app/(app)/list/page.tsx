@@ -11,6 +11,9 @@ import {
   getMyStores,
   setItemChecked,
 } from "@/lib/listApi";
+import { setDefaultStore } from "@/lib/storesApi";
+import { buildShoppingList } from "@/lib/recipeApi";
+import { comparePricesForList, type PriceCompareResponse } from "@/lib/pricesApi";
 import type { CurrentList, ShoppingItem } from "@/lib/listTypes";
 import ListRow from "@/components/list/ListRow";
 
@@ -22,6 +25,8 @@ function num(v: string | number | null | undefined): number {
 export default function ListPage() {
   const [list, setList] = useState<CurrentList | null>(null);
   const [storeName, setStoreName] = useState<string | null>(null);
+  const [compare, setCompare] = useState<PriceCompareResponse | null>(null);
+  const [switchingTo, setSwitchingTo] = useState<number | null>(null);
   const [loaded, setLoaded] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [pending, setPending] = useState<Set<number>>(new Set());
@@ -48,6 +53,37 @@ export default function ListPage() {
   useEffect(() => {
     load();
   }, [load]);
+
+  // Cross-store price comparison for the current list's needed items.
+  useEffect(() => {
+    const id = list?.id;
+    if (id == null) return;
+    let cancelled = false;
+    comparePricesForList(id)
+      .then((res) => {
+        if (!cancelled) setCompare(res);
+      })
+      .catch(() => {
+        /* comparison is best-effort */
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [list?.id]);
+
+  async function switchStore(storeLocationId: number) {
+    if (!list?.week_start) return;
+    setSwitchingTo(storeLocationId);
+    try {
+      await setDefaultStore(storeLocationId);
+      await buildShoppingList(list.week_start);
+      await load();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Couldn't switch stores.");
+    } finally {
+      setSwitchingTo(null);
+    }
+  }
 
   const allItems = useMemo<ShoppingItem[]>(
     () => (list ? list.categories.flatMap((c) => c.items) : []),
@@ -219,6 +255,64 @@ export default function ListPage() {
         <p className="mt-4 rounded-xl bg-warn-soft px-4 py-3 text-sm text-warn" role="alert">
           {error}
         </p>
+      )}
+
+      {/* store price comparison */}
+      {compare && compare.needed_count > 0 && compare.stores.length > 1 && (
+        <section className="mt-5">
+          <div className="flex items-baseline justify-between px-1">
+            <h2 className="text-xs font-semibold uppercase tracking-wide text-ink-faint">
+              Compare stores
+            </h2>
+            <span className="text-[11px] text-ink-faint">
+              known deals · {compare.needed_count} to buy
+            </span>
+          </div>
+          <div className="mt-2 flex gap-2 overflow-x-auto pb-1">
+            {[...compare.stores]
+              .sort((a, b) => Number(b.is_default) - Number(a.is_default))
+              .map((s) => {
+                const name = s.chain_name ?? s.store_name ?? "Store";
+                const busy = switchingTo === s.store_id;
+                return (
+                  <button
+                    key={s.store_id}
+                    disabled={s.is_default || switchingTo != null}
+                    onClick={() => switchStore(s.store_id)}
+                    className={`w-36 shrink-0 rounded-2xl border p-3 text-left ${
+                      s.is_default
+                        ? "border-brand bg-brand-soft"
+                        : "border-hairline bg-surface active:scale-[.98]"
+                    }`}
+                  >
+                    <p
+                      className={`truncate text-sm font-semibold ${
+                        s.is_default ? "text-brand-dark" : "text-ink"
+                      }`}
+                    >
+                      {name}
+                    </p>
+                    <p className="mt-1 text-base font-bold text-ink">
+                      {s.priced_count > 0 ? `$${num(s.known_cost_sum).toFixed(2)}` : "—"}
+                    </p>
+                    <p className="text-[11px] text-ink-faint">
+                      {s.priced_count} of {s.total_count} priced
+                    </p>
+                    <p className="mt-1 text-[11px] font-medium text-brand-dark">
+                      {busy
+                        ? "Switching…"
+                        : s.is_default
+                          ? "This week"
+                          : "Tap to switch"}
+                    </p>
+                  </button>
+                );
+              })}
+          </div>
+          <p className="mt-1 px-1 text-[11px] text-ink-faint">
+            Known costs from current flyers. “—” means no deal listed there.
+          </p>
+        </section>
       )}
 
       {/* grouped items */}

@@ -44,6 +44,23 @@ export default function ScanPage() {
   const [uncertain, setUncertain] = useState<string[]>([]);
   const [saving, setSaving] = useState(false);
   const [savedCount, setSavedCount] = useState(0);
+  const [mode, setMode] = useState<"replace" | "merge">("merge");
+
+  // When entering review, pre-select mode: remembered explicit choice, else
+  // merge for a small (fridge-only) scan, replace for a full-kitchen scan.
+  useEffect(() => {
+    if (step !== "review") return;
+    const saved =
+      typeof window !== "undefined" ? localStorage.getItem("pantryai:scanMode") : null;
+    if (saved === "replace" || saved === "merge") setMode(saved);
+    else setMode(photos.length >= 3 ? "replace" : "merge");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [step]);
+
+  function chooseMode(m: "replace" | "merge") {
+    setMode(m);
+    if (typeof window !== "undefined") localStorage.setItem("pantryai:scanMode", m);
+  }
 
   const cameraRef = useRef<HTMLInputElement>(null);
   const galleryRef = useRef<HTMLInputElement>(null);
@@ -141,6 +158,7 @@ export default function ScanPage() {
     setError(null);
     try {
       const res = await confirmScan(scanId, {
+        mode,
         confirmed: items.map(({ id: _id, freshness: _f, ...rest }) => rest),
       });
       setSavedCount(res.active_items);
@@ -209,6 +227,8 @@ export default function ScanPage() {
           onDismissUncertain={dismissUncertain}
           onSave={save}
           itemCount={items.length}
+          mode={mode}
+          onModeChange={chooseMode}
         />
       )}
 
@@ -376,6 +396,8 @@ function ReviewStep({
   onDismissUncertain,
   onSave,
   itemCount,
+  mode,
+  onModeChange,
 }: {
   grouped: [string, ReviewItem[]][];
   uncertain: string[];
@@ -387,6 +409,8 @@ function ReviewStep({
   onDismissUncertain: (desc: string) => void;
   onSave: () => void;
   itemCount: number;
+  mode: "replace" | "merge";
+  onModeChange: (m: "replace" | "merge") => void;
 }) {
   return (
     <div className="pb-28">
@@ -449,13 +473,35 @@ function ReviewStep({
         </p>
       )}
 
+      {/* replace vs merge */}
+      <div className="mt-6 flex flex-col gap-2">
+        <ModeOption
+          active={mode === "merge"}
+          onClick={() => onModeChange("merge")}
+          icon="➕"
+          title="Just adding / updating"
+          body="Keep everything else in my pantry."
+        />
+        <ModeOption
+          active={mode === "replace"}
+          onClick={() => onModeChange("replace")}
+          icon="🔄"
+          title="This was my whole kitchen"
+          body="Replace inventory — drop items not seen here."
+        />
+      </div>
+
       <div className="fixed inset-x-0 bottom-16 z-30 mx-auto max-w-md border-t border-hairline bg-canvas/95 px-5 py-3 backdrop-blur">
         <button
           onClick={onSave}
           disabled={saving}
           className="flex h-14 w-full items-center justify-center rounded-2xl bg-brand text-base font-semibold text-white shadow-lg shadow-brand/25 transition active:scale-[.99] disabled:opacity-60"
         >
-          {saving ? "Saving…" : "Looks good — save my kitchen"}
+          {saving
+            ? "Saving…"
+            : mode === "replace"
+              ? "Save — replace my kitchen"
+              : "Save — add these items"}
         </button>
       </div>
     </div>
@@ -663,6 +709,44 @@ function AddItem({ onAdd }: { onAdd: (name: string, category?: string) => void }
 /* ------------------------------------------------------------------ */
 /* Success                                                            */
 /* ------------------------------------------------------------------ */
+function ModeOption({
+  active,
+  onClick,
+  icon,
+  title,
+  body,
+}: {
+  active: boolean;
+  onClick: () => void;
+  icon: string;
+  title: string;
+  body: string;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      className={`flex items-start gap-3 rounded-2xl border-2 p-3 text-left transition ${
+        active ? "border-brand bg-brand-soft" : "border-hairline bg-surface"
+      }`}
+    >
+      <span className="text-xl" aria-hidden>
+        {icon}
+      </span>
+      <span className="min-w-0 flex-1">
+        <span className="block text-sm font-semibold text-ink">{title}</span>
+        <span className="block text-xs text-ink-soft">{body}</span>
+      </span>
+      <span
+        className={`mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-full border-2 ${
+          active ? "border-brand bg-brand text-white" : "border-hairline"
+        }`}
+      >
+        {active && <span className="text-[10px]">✓</span>}
+      </span>
+    </button>
+  );
+}
+
 function SuccessStep({ count }: { count: number }) {
   return (
     <div className="flex min-h-[60vh] flex-col items-center justify-center text-center">

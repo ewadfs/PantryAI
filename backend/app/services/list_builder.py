@@ -22,7 +22,7 @@ from app.models.recipe import Recipe, WeekRecipe
 from app.models.shopping import ShoppingList, ShoppingListItem
 from app.models.store import StoreLocation, SupportedChain, UserStore
 from app.models.user import User
-from app.services import ingredient_matcher
+from app.services import ingredient_matcher, quantities
 
 
 def _to_decimal(value) -> Decimal | None:
@@ -258,6 +258,9 @@ async def build_list(
     # where a current known price exists (honest math: unknowns count as nothing).
     pantry_value = Decimal("0")
     pantry_valued_iids: set[int] = set()
+    # Pantry-backed demand accumulated per ingredient — checked for shortfall
+    # (quantity-aware) after the main aggregation so PARTIAL items add a buy line.
+    pantry_backed: dict[str, dict] = {}
     for recipe in rows:
         for ing in recipe.ingredients_json or []:
             if not isinstance(ing, dict):
@@ -279,6 +282,8 @@ async def build_list(
             ) or (pantry_item is not None and pantry_item.is_staple)
             if is_staple:
                 continue
+            key = f"id:{iid}" if iid is not None else f"nm:{norm}"
+
             if ing.get("in_pantry") and pantry_item is not None:
                 # Pantry put to work: credit its known price once per ingredient.
                 if iid is not None and iid not in pantry_valued_iids:
@@ -286,9 +291,25 @@ async def build_list(
                     if deal is not None and deal.sale_price is not None:
                         pantry_value += deal.sale_price
                         pantry_valued_iids.add(iid)
-                continue  # already have it
+                # Accumulate demand so we can check sufficiency after the loop.
+                pb = pantry_backed.setdefault(
+                    key,
+                    {
+                        "iid": iid, "name": name, "unit": ing.get("unit"),
+                        "qty_sum": 0.0, "qty_known": False,
+                        "pantry_item": pantry_item, "from_recipes": [],
+                    },
+                )
+                q = _qty_to_float(ing.get("quantity"))
+                if q is not None:
+                    pb["qty_sum"] += q
+                    pb["qty_known"] = True
+                pb["from_recipes"].append(
+                    {"recipe_id": recipe.id, "title": recipe.title,
+                     "qty": ing.get("quantity"), "unit": ing.get("unit")}
+                )
+                continue  # covered (or partial) — handled after the loop
 
-            key = f"id:{iid}" if iid is not None else f"nm:{norm}"
             ukey = _unit_key(ing.get("unit"))
             qty = _qty_to_float(ing.get("quantity"))
 
@@ -351,6 +372,41 @@ async def build_list(
                     "notes": note,
                 }
             )
+
+    # 4b. Quantity-aware pantry math: a pantry-backed ingredient whose holding
+    # doesn't cover the week's demand adds a SHORTFALL buy line (rounded up to a
+    # purchasable amount). SUFFICIENT and UNVERIFIABLE keep today's drop behavior.
+    for key, pb in pantry_backed.items():
+        if not pb["qty_known"]:
+            continue
+        have = quantities.parse(pb["pantry_item"].quantity_estimate, pb["pantry_item"].unit)
+        need = quantities.parse(_fmt_qty(pb["qty_sum"]), pb["unit"])
+        state, shortfall = quantities.sufficiency(have, need)
+        if state != "partial":
+            continue
+        rounded, _disp = quantities.format_amount(shortfall, need)
+        iid = pb["iid"]
+        deal = deal_by_ingredient.get(iid) if iid is not None else None
+        cat = master[iid].category if (iid is not None and iid in master) else None
+        origin = (
+            f"you have {quantities.describe(have)} of the "
+            f"{quantities.describe(need)} needed"
+        )
+        line_specs.append(
+            {
+                "ingredient_id": iid,
+                "display_name": pb["name"],
+                "buy_quantity": f"{rounded:g}",
+                "unit": pb["unit"],
+                "category": cat,
+                "price": deal.sale_price if deal is not None else None,
+                "is_on_sale": deal is not None,
+                "regular_price": deal.regular_price if deal is not None else None,
+                "deal_id": deal.id if deal is not None else None,
+                "from_recipes": pb["from_recipes"],
+                "notes": origin,
+            }
+        )
 
     # 5. Replace any existing active list for this week, then persist.
     existing = (

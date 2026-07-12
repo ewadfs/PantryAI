@@ -27,7 +27,7 @@ export function totalMinutes(r: Recipe): number | null {
 /** Ingredients to reason about — full when 'ready', else the concept's key list. */
 export function effectiveIngredients(
   r: Recipe,
-): { in_pantry: boolean; on_sale: boolean }[] {
+): { in_pantry: boolean | "partial"; on_sale: boolean }[] {
   return r.ingredients.length ? r.ingredients : r.key_ingredients;
 }
 
@@ -82,11 +82,17 @@ export function CostLine({ recipe }: { recipe: Recipe }) {
 }
 
 export function PantryLine({ recipe }: { recipe: Recipe }) {
-  const have = recipe.cost.pantry_items_used;
-  const total = effectiveIngredients(recipe).length;
+  const ings = effectiveIngredients(recipe);
+  const total = ings.length;
+  // Partial counts as needing a purchase — only full holdings count as "have".
+  const have = ings.filter((i) => i.in_pantry === true).length;
+  const partial = ings.filter((i) => i.in_pantry === "partial").length;
   return (
     <p className="text-sm text-ink-soft">
       🏠 Have {have} of {total} ingredient{total === 1 ? "" : "s"}
+      {partial > 0 && (
+        <span className="text-warn"> ({partial} partial)</span>
+      )}
     </p>
   );
 }

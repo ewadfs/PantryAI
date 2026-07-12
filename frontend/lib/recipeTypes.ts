@@ -4,7 +4,9 @@ export type RecipeIngredient = {
   brand: string | null;
   quantity: string | number | null;
   unit: string | null;
-  in_pantry: boolean;
+  in_pantry: boolean | "partial";
+  pantry_quantity: string | null;
+  shortfall_quantity: string | null;
   on_sale: boolean;
   sale_store: string | null;
   sale_price: string | number | null;

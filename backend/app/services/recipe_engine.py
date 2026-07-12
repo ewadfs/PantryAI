@@ -13,7 +13,7 @@ import asyncio
 import json
 import logging
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
 
@@ -28,7 +28,7 @@ from app.models.pantry import PantryItem
 from app.models.recipe import Recipe, WeekRecipe
 from app.models.store import StoreLocation, SupportedChain, UserStore
 from app.models.user import User
-from app.services import ingredient_matcher
+from app.services import ingredient_matcher, quantities
 from app.services.vision import _extract_json
 
 logger = logging.getLogger(__name__)
@@ -49,6 +49,10 @@ wet/sugary sauces as a glaze in the final 8-10 minutes. Sugary marinades burn \
 before proteins finish at 400°F+.
 Nutrition must be computed from the actual ingredient quantities, not vibes; when \
 uncertain, estimate slightly high on calories.
+Never assume more of a pantry item than the quantity shown in THEIR KITCHEN. If a \
+dish needs more than is on hand, either scale the recipe down to the amount \
+available OR treat the difference as a purchase — and say which in the ingredient \
+list (mark it to buy, don't silently claim it's in the pantry).
 Ingredient naming: put a GENERIC name in generic_name (e.g. "chipotle salsa"), and \
 any brand in a SEPARATE nullable brand field. Never embed the brand in the name."""
 
@@ -304,14 +308,17 @@ Judge against this rubric:
    sauces get ribbons; rice type matches the dish tradition where possible.
 4. PROTEIN FLOOR — per-serving protein ≥ the stated floor.
 5. TIME HONESTY — total_time_min must include passive time (boiling, preheat, rests).
-6. PANTRY REALISM — quantities implied must not exceed what the pantry plausibly holds.
+6. PANTRY REALISM — the amounts a concept implies must not exceed the quantities
+   the pantry actually holds (you are given the pantry with quantities — check the
+   NUMBERS, not vibes). Assuming "1 lb ground beef" when only 1 lb is on hand and
+   the dish clearly needs more, without treating the extra as a purchase, FAILS.
 7. PROFILE FIT — matches stated cuisines/skill/max-prep AND the taste notes + rating
    history.
 
 Return ONLY valid JSON:
 {"reviews":[{"index":0-based, "score":1-10, "verdict":"ship"|"revise",
 "fail_rubrics":[ints of failed rubric numbers], "worst_issues":[short strings]}]}
-Be strict: a concept that fails rubric 1, 4, or 5, or scores below 7 overall, is
+Be strict: a concept that fails rubric 1, 4, 5, or 6, or scores below 7 overall, is
 "revise"."""
 
 
@@ -328,6 +335,8 @@ class _Ctx:
     history_block: str = ""
     variety_block: str = ""
     direction: str = ""
+    pantry_by_iid: dict[int, PantryItem] = field(default_factory=dict)
+    pantry_by_norm: dict[str, PantryItem] = field(default_factory=dict)
 
 
 async def _resolve_pins(
@@ -411,10 +420,22 @@ async def _load_context(db: AsyncSession, user: User) -> _Ctx:
     relevant = _relevant_deals(all_deals, pantry)
     context_text = _build_context(pantry, relevant, chain_name, today)
     floor = math.ceil(user.protein_target / _MEALS_PER_DAY)
+
+    # Quantity-aware pantry lookup (by matched ingredient id + normalized name).
+    pantry_by_iid: dict[int, PantryItem] = {}
+    pantry_by_norm: dict[str, PantryItem] = {}
+    for it in pantry:
+        iid, _c = ingredient_matcher.match_ingredient(it.name or "")
+        if iid is not None:
+            pantry_by_iid.setdefault(iid, it)
+        pantry_by_norm.setdefault(ingredient_matcher._norm(it.name or ""), it)
+
     return _Ctx(
         pantry, chain_name, store_name, deal_by_ingredient, context_text,
         protein_floor=floor,
         taste_block=_taste_block(user.taste_notes),
+        pantry_by_iid=pantry_by_iid,
+        pantry_by_norm=pantry_by_norm,
     )
 
 
@@ -582,7 +603,9 @@ def _build_context(
             qty = " ".join(p for p in (it.quantity_estimate, it.unit) if p)
             suffix = f" [{it.category}]" if it.category else ""
             note = f" ({', '.join(tags)})" if tags else ""
-            lines.append(f"- {it.name}{f' — {qty}' if qty else ''}{suffix}{note}")
+            # Quantity is prominent: the model must not assume more than HAVE.
+            have = f" — HAVE {qty}" if qty else " — HAVE (amount unknown)"
+            lines.append(f"- {it.name}{have}{suffix}{note}")
     else:
         lines.append("- (empty)")
 
@@ -606,7 +629,8 @@ def _cost_from_ingredients(ingredients: list[dict]) -> dict:
     unknown = 0
     pantry_used = 0
     for ing in ingredients:
-        if ing.get("in_pantry"):
+        # A PARTIAL item is only partly on hand — it still needs a purchase.
+        if ing.get("in_pantry") is True:
             pantry_used += 1
             continue
         price = _to_decimal(ing.get("sale_price"))
@@ -669,8 +693,14 @@ def _reconcile_key(raw: dict, deals: dict[int, DealCache], chain_name: str | Non
 
 
 def _reconcile_ingredients(
-    raw_ingredients: list, deals: dict[int, DealCache], chain_name: str | None
+    raw_ingredients: list,
+    deals: dict[int, DealCache],
+    chain_name: str | None,
+    pantry_by_iid: dict[int, PantryItem] | None = None,
+    pantry_by_norm: dict[str, PantryItem] | None = None,
 ) -> list[dict]:
+    pantry_by_iid = pantry_by_iid or {}
+    pantry_by_norm = pantry_by_norm or {}
     out: list[dict] = []
     for raw in raw_ingredients:
         if not isinstance(raw, dict):
@@ -690,13 +720,33 @@ def _reconcile_ingredients(
             "sale_store": None,
             "sale_price": None,
         }
-        if not in_pantry:
-            iid, _c = ingredient_matcher.match_ingredient(name)
+        iid, _c = ingredient_matcher.match_ingredient(name)
+        norm = ingredient_matcher._norm(name)
+
+        def _apply_deal() -> None:
             deal = deals.get(iid) if iid is not None else None
             if deal is not None:
                 ing["on_sale"] = True
                 ing["sale_store"] = chain_name
                 ing["sale_price"] = str(deal.sale_price)
+
+        if not in_pantry:
+            _apply_deal()
+        else:
+            # Quantity-aware: does the pantry actually cover what the recipe wants?
+            pitem = (pantry_by_iid.get(iid) if iid is not None else None) or (
+                pantry_by_norm.get(norm)
+            )
+            if pitem is not None:
+                have = quantities.parse(pitem.quantity_estimate, pitem.unit)
+                need = quantities.parse(raw.get("quantity"), raw.get("unit"))
+                state, shortfall = quantities.sufficiency(have, need)
+                if state == "partial":
+                    _, buy_disp = quantities.format_amount(shortfall, need)
+                    ing["in_pantry"] = "partial"
+                    ing["pantry_quantity"] = quantities.describe(have)
+                    ing["shortfall_quantity"] = buy_disp
+                    _apply_deal()  # the shortfall is a purchase — price it
         out.append(ing)
     return out
 
@@ -747,17 +797,33 @@ def _needs_revision(review: dict) -> bool:
         for x in (review.get("fail_rubrics") or [])
         if str(x).strip().lstrip("-").isdigit()
     }
-    hard = bool(fails & {1, 4, 5})
+    hard = bool(fails & {1, 4, 5, 6})
     return score < 7 or hard or review.get("verdict") == "revise"
 
 
+def _pantry_qty_lines(pantry: list[PantryItem]) -> str:
+    """Compact 'name: HAVE qty' list so the critic checks pantry realism on
+    actual numbers rather than vibes."""
+    out = []
+    for it in pantry:
+        q = " ".join(p for p in (it.quantity_estimate, it.unit) if p) or "amount unknown"
+        out.append(f"- {it.name}: HAVE {q}")
+    return "\n".join(out) if out else "- (empty)"
+
+
 async def _run_critic(
-    client: AsyncAnthropic, concepts: list[dict], floor: int, profile_text: str
+    client: AsyncAnthropic,
+    concepts: list[dict],
+    floor: int,
+    profile_text: str,
+    pantry_lines: str = "",
 ) -> list[dict]:
     briefs = [_concept_brief(c) for c in concepts]
     user_msg = (
         f"PROTEIN FLOOR: {floor} g per serving.\n"
         f"DINER PROFILE:\n{profile_text}\n\n"
+        f"THEIR PANTRY (with quantities — check rubric 6 against these numbers):\n"
+        f"{pantry_lines or '- (unknown)'}\n\n"
         f"CONCEPTS (0-indexed):\n{json.dumps(briefs, ensure_ascii=False)}\n\n"
         "Review each concept now."
     )
@@ -801,9 +867,10 @@ async def _critique_and_fix(
     profile_text: str,
     base_system: str,
     ctx_text: str,
+    pantry_lines: str = "",
 ) -> tuple[list[dict], list[dict]]:
     """Score concepts, regenerate weak ones once, return (concepts, critic_meta)."""
-    reviews = await _run_critic(client, concepts, floor, profile_text)
+    reviews = await _run_critic(client, concepts, floor, profile_text, pantry_lines)
     by_index: dict[int, dict] = {}
     for rv in reviews:
         if not isinstance(rv, dict):
@@ -990,7 +1057,7 @@ async def generate_concepts(
     if raw:
         raw, critics = await _critique_and_fix(
             client, raw, ctx.protein_floor, _profile_text(user, ctx),
-            full_system, user_msg,
+            full_system, user_msg, _pantry_qty_lines(ctx.pantry),
         )
         # Variety guard: never re-serve a recent signature under a new name.
         if recent_sigs:
@@ -1140,13 +1207,15 @@ async def _fill_details(db: AsyncSession, recipes: list[Recipe], ctx: _Ctx) -> N
 
         raw_ings = data.get("ingredients") if isinstance(data, dict) else None
         ingredients = _reconcile_ingredients(
-            raw_ings or [], ctx.deal_by_ingredient, ctx.chain_name
+            raw_ings or [], ctx.deal_by_ingredient, ctx.chain_name,
+            ctx.pantry_by_iid, ctx.pantry_by_norm,
         )
         if not ingredients:
             # Fallback: derive usable ingredients from the concept's key list so
             # the recipe is never stuck as a 'concept' / blocking list builds.
             ingredients = _reconcile_ingredients(
-                recipe.key_ingredients_json or [], ctx.deal_by_ingredient, ctx.chain_name
+                recipe.key_ingredients_json or [], ctx.deal_by_ingredient, ctx.chain_name,
+                ctx.pantry_by_iid, ctx.pantry_by_norm,
             )
         recipe.ingredients_json = ingredients
         instructions = data.get("instructions") if isinstance(data, dict) else None

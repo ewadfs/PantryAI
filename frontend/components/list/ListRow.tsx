@@ -58,6 +58,9 @@ export default function ListRow({
         {recipes.length > 0 && (
           <p className="mt-0.5 truncate text-xs text-ink-faint">for: {recipes.join(", ")}</p>
         )}
+        {item.notes && item.notes.startsWith("you have") && (
+          <p className="mt-0.5 text-xs font-medium text-warn">🟡 {item.notes}</p>
+        )}
       </div>
 
       <div className="shrink-0 text-right">

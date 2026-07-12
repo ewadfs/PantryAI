@@ -2,6 +2,7 @@
 
 from datetime import date, datetime
 from decimal import Decimal
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -11,6 +12,8 @@ class RecipeIngredient(BaseModel):
 
     ``name`` mirrors ``generic_name`` (kept for the shopping-list builder);
     ``brand`` is a separate, optional sub-label — never embedded in the name.
+    ``in_pantry`` is tri-state: True (have enough), "partial" (have some, must
+    buy the shortfall), or False (buy it all).
     """
 
     model_config = ConfigDict(extra="ignore")
@@ -20,7 +23,9 @@ class RecipeIngredient(BaseModel):
     brand: str | None = None
     quantity: str | float | None = None
     unit: str | None = None
-    in_pantry: bool = False
+    in_pantry: bool | Literal["partial"] = False
+    pantry_quantity: str | None = None
+    shortfall_quantity: str | None = None
     on_sale: bool = False
     sale_store: str | None = None
     sale_price: Decimal | None = None

@@ -12,7 +12,9 @@ type LooseIng = {
   brand?: string | null;
   quantity?: string | number | null;
   unit?: string | null;
-  in_pantry: boolean;
+  in_pantry: boolean | "partial";
+  pantry_quantity?: string | null;
+  shortfall_quantity?: string | null;
   on_sale: boolean;
   sale_store?: string | null;
   sale_price?: string | number | null;
@@ -23,7 +25,15 @@ function IngredientRow({ ing }: { ing: LooseIng }) {
   const qty = [ing.quantity, ing.unit].filter(Boolean).join(" ");
   let icon = "🛒";
   let tail: React.ReactNode = <span className="text-ink-faint">—</span>;
-  if (ing.in_pantry) {
+  if (ing.in_pantry === "partial") {
+    icon = "🟡";
+    tail = (
+      <span className="text-warn">
+        have {ing.pantry_quantity ?? "some"}
+        {ing.shortfall_quantity ? ` — buy ${ing.shortfall_quantity} more` : ""}
+      </span>
+    );
+  } else if (ing.in_pantry) {
     icon = "🏠";
     tail = <span className="text-brand-dark">have</span>;
   } else if (ing.on_sale) {
@@ -150,7 +160,7 @@ export default function RecipeSheet({
   // Fetch cross-store prices once the recipe is ready and needs ≥1 purchase.
   const needsBuying =
     data.status === "ready" &&
-    data.ingredients.some((ing) => !(ing as LooseIng).in_pantry);
+    data.ingredients.some((ing) => (ing as LooseIng).in_pantry !== true);
   useEffect(() => {
     if (!needsBuying) return;
     let cancelled = false;
@@ -202,6 +212,7 @@ export default function RecipeSheet({
           </ul>
           <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-xs text-ink-faint">
             <span>🏠 have</span>
+            <span>🟡 have some</span>
             <span>🏷️ on sale</span>
             <span>🛒 need</span>
           </div>

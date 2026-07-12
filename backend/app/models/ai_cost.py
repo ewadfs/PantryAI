@@ -23,6 +23,10 @@ class AICostEvent(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     user_id: Mapped[int | None] = mapped_column(Integer)
     category: Mapped[str] = mapped_column(String(30), nullable=False)
+    # Pipeline stage within a category (Prompt 32 A1): concepts | critic |
+    # concept_fix | details | detail_fix | extraction. Lets the ledger answer
+    # "which model actually served Stage 1?" without inference.
+    stage: Mapped[str | None] = mapped_column(String(20))
     model: Mapped[str] = mapped_column(String(50), nullable=False)
     input_tokens: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
     output_tokens: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))

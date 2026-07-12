@@ -77,6 +77,34 @@ class MarketAnchor(BaseModel):
     price_unit: str | None = None
     savings_pct: float | None = None
     store: str | None = None
+    # True when the anchor comes from a saved store other than the batch's
+    # default — the sparse-store fallback (Prompt 32 #4); the UI labels it.
+    cross_store: bool = False
+
+
+class ProteinBelowFloorFlag(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    protein_g: float
+    floor_g: float
+
+
+class HeavyFlag(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    calories: float
+    cap: float
+    daily_target: float | None = None
+
+
+class QualityFlags(BaseModel):
+    """Honesty flags (Prompt 32 C): a recipe below the protein floor or above
+    the calorie band ships ONLY with these, rendered as amber chips."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    protein_below_floor: ProteinBelowFloorFlag | None = None
+    heavy: HeavyFlag | None = None
 
 
 class RecipeRead(BaseModel):
@@ -103,6 +131,7 @@ class RecipeRead(BaseModel):
     cost: RecipeCost
     is_market_pick: bool = False
     market_anchor: MarketAnchor | None = None
+    quality_flags: QualityFlags | None = None
 
 
 class GenerateRequest(BaseModel):

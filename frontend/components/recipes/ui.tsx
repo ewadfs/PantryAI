@@ -88,7 +88,8 @@ export function CostLine({ recipe }: { recipe: Recipe }) {
   );
 }
 
-/** "Built around: pork shoulder, $1.99/lb this week" for a market pick. */
+/** "Built around: pork shoulder, $1.99/lb this week" for a market pick;
+ * a cross-store anchor names its store ("… — at Stop & Shop"). */
 export function marketAnchorLine(r: Recipe): string | null {
   if (!r.is_market_pick || !r.market_anchor) return null;
   const a = r.market_anchor;
@@ -96,7 +97,30 @@ export function marketAnchorLine(r: Recipe): string | null {
     a.sale_price != null
       ? `$${Number(a.sale_price).toFixed(2)}${a.price_unit ? `/${a.price_unit}` : ""}`
       : null;
-  return `Built around: ${a.name}${price ? `, ${price} this week` : ""}`;
+  const at = a.cross_store && a.store ? ` — at ${a.store}` : "";
+  return `Built around: ${a.name}${price ? `, ${price} this week` : ""}${at}`;
+}
+
+/** Amber honesty chips: a sub-floor or heavy recipe never renders its numbers
+ * unannotated — on the card AND the detail sheet. */
+export function QualityChips({ recipe }: { recipe: Recipe }) {
+  const f = recipe.quality_flags;
+  if (!f || (!f.protein_below_floor && !f.heavy)) return null;
+  const chip =
+    "inline-flex items-center rounded-full bg-warn-soft px-2 py-1 text-[11px] font-semibold text-warn";
+  return (
+    <>
+      {f.protein_below_floor && (
+        <span className={chip}>
+          ⚠ {Math.round(f.protein_below_floor.protein_g)}g protein — below your{" "}
+          {Math.round(f.protein_below_floor.floor_g)}g target
+        </span>
+      )}
+      {f.heavy && (
+        <span className={chip}>⚠ heavy: {Math.round(f.heavy.calories)} cal</span>
+      )}
+    </>
+  );
 }
 
 export function MarketPickBadge() {

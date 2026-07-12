@@ -86,12 +86,19 @@ def cost_usd(model: str, usage: Any, *, batch_api: bool = False) -> float:
 
 
 def record_usage(
-    model: str, usage: Any, *, category: str | None = None, batch_api: bool | None = None
+    model: str,
+    usage: Any,
+    *,
+    category: str | None = None,
+    batch_api: bool | None = None,
+    stage: str | None = None,
 ) -> dict | None:
     """Record one call's usage into the active metering scope (if any).
 
     ``category`` / ``batch_api`` override the scope defaults for a single call
-    (e.g. the critic call inside a generation scope).
+    (e.g. the critic call inside a generation scope). ``stage`` attributes the
+    call to a pipeline stage (concepts / critic / concept_fix / details /
+    detail_fix) so the ledger can answer "which model served Stage 1?" exactly.
     """
     meta = _current.get()
     if meta is None:
@@ -103,6 +110,7 @@ def record_usage(
     cache_write = int(getattr(usage, "cache_creation_input_tokens", 0) or 0)
     event = {
         "category": category or meta.category,
+        "stage": stage,
         "model": model,
         "input_tokens": inp,
         "output_tokens": out,

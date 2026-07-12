@@ -7,6 +7,7 @@ import type { Recipe } from "@/lib/recipeTypes";
 import {
   DifficultyPill,
   MarketPickBadge,
+  QualityChips,
   marketAnchorLine,
   metaLine,
   nutritionLine,
@@ -206,6 +207,7 @@ export default function RecipeSheet({
           <div className="flex flex-wrap items-center gap-2">
             <DifficultyPill difficulty={data.difficulty} />
             {data.is_market_pick && <MarketPickBadge />}
+            <QualityChips recipe={data} />
           </div>
           <h2 className="mt-2 text-2xl font-bold text-ink">{data.title}</h2>
           {marketAnchorLine(data) && (

@@ -635,7 +635,11 @@ class CircularExtractor:
                 Decimal("0.01")
             )
 
-        ingredient_id, match_conf = ingredient_matcher.match_ingredient(name)
+        # Flyer names carry pack/grade/marketing noise — match with the
+        # qualifier-stripping normalizer (Prompt 32 3c).
+        ingredient_id, match_conf = ingredient_matcher.match_flyer_name(
+            name, _trim(raw.get("brand"), 200)
+        )
 
         return DealCache(
             chain_id=chain_id,

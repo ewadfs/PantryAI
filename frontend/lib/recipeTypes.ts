@@ -45,7 +45,17 @@ export type MarketAnchor = {
   price_unit: string | null;
   savings_pct: number | null;
   store: string | null;
+  // Anchored at a saved store other than this batch's default store
+  // (sparse-store fallback) — the anchor line names the store.
+  cross_store?: boolean;
 };
+
+// Honesty flags: a recipe below the protein floor or above the calorie band
+// ships ONLY with these, rendered as amber chips on card and detail.
+export type QualityFlags = {
+  protein_below_floor?: { protein_g: number; floor_g: number } | null;
+  heavy?: { calories: number; cap: number; daily_target?: number | null } | null;
+} | null;
 
 export type Recipe = {
   id: number;
@@ -69,6 +79,7 @@ export type Recipe = {
   cost: RecipeCost;
   is_market_pick: boolean;
   market_anchor: MarketAnchor | null;
+  quality_flags?: QualityFlags;
 };
 
 export type GenerateResponse = { recipes: Recipe[] };

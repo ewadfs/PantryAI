@@ -8,6 +8,13 @@ Matching tiers (best first):
 
 The whole ``ingredient_master`` table is small (~400 rows), so it's preloaded
 once into a module-level cache and matched entirely in memory.
+
+Flyer names (Prompt 32 3c): grocery circulars bury the food noun under pack/
+grade/marketing qualifiers ("Fresh Boneless Skinless Chicken Breast Family
+Pack, 80% Lean...") that sink the Jaccard overlap below the accept threshold.
+:func:`normalize_flyer_name` strips those qualifiers (mirroring the 18-B4
+produce qualifier-stripping) and :func:`match_flyer_name` matches on both the
+raw and normalized forms, keeping whichever scores higher.
 """
 
 import re
@@ -23,6 +30,75 @@ _cache: list[dict] | None = None
 
 _TOKEN_RE = re.compile(r"[a-z0-9]+")
 _ACCEPT_THRESHOLD = 0.5
+
+# --------------------------------------------------------------------------- #
+# Flyer-name normalization (Prompt 32 3c)
+# --------------------------------------------------------------------------- #
+# Pack / grade / marketing qualifiers that carry no food identity. Adjectives
+# like "boneless skinless" go; the protein noun stays.
+_FLYER_NOISE = re.compile(
+    r"""\b(?:
+        (?:family|value|mega|party|club|bonus|econo(?:my)?|variety)\s*-?\s*pack|
+        \d{1,3}\s*%\s*(?:lean|fat(?:\s*free)?)|
+        \d+(?:\.\d+)?\s*(?:oz|lbs?|ct|count|pk|pcs?)\.?(?:\s*(?:avg|average|bag|box|pkg|package))?|
+        boneless|skinless|bone[-\s]?in|semi[-\s]?boneless|
+        thin(?:ly)?\s+sliced|thick\s+cut|center\s+cut|split|quartered|
+        jumbo|extra\s+large|super|premium|select(?:ed)?|choice|prime|
+        usda\s+(?:choice|prime|select|inspected|grade\s+a)|grade\s+a{1,3}|
+        fresh|frozen|previously\s+frozen|never\s+frozen|
+        all[-\s]?natural|natural|organic|antibiotic[-\s]?free|hormone[-\s]?free|
+        farm[-\s]?raised|wild[-\s]?caught|cage[-\s]?free|free[-\s]?range|
+        grass[-\s]?fed|air[-\s]?chilled|
+        store\s+(?:made|cut)|hand[-\s]?trimmed|restaurant\s+quality|
+        great\s+on\s+the\s+grill|perfect\s+for\s+grilling|
+        sold\s+(?:whole\s+)?in\s+(?:the\s+)?bag|must\s+buy\s+\d+|limit\s+\d+|
+        with\s+card|digital\s+(?:coupon|deal)|
+        sale|special|weekly\s+deal
+    )\b""",
+    re.IGNORECASE | re.VERBOSE,
+)
+# Brand prefixes commonly headlining meat/seafood flyer lines. A deal row's own
+# ``brand`` field (when the extractor filled it) is stripped too.
+_FLYER_BRANDS = (
+    "perdue", "tyson", "foster farms", "smithfield", "hatfield", "butterball",
+    "oscar mayer", "hillshire farm", "johnsonville", "jimmy dean",
+    "bell & evans", "bell and evans", "nature's promise", "natures promise",
+    "bowl & basket", "bowl and basket", "wholesome pantry", "sanderson farms",
+    "springer mountain farms", "shady brook farms", "jennie-o", "jennie o",
+    "al fresco", "applegate", "boar's head", "boars head", "sea best",
+    "fresh catch", "lidl", "shoprite", "stop & shop", "stop and shop",
+)
+_WS_RE = re.compile(r"\s+")
+
+
+def normalize_flyer_name(name: str, brand: str | None = None) -> str:
+    """Strip pack/grade/marketing qualifiers and brand prefixes from a flyer
+    product name, leaving the food identity ("Fresh Boneless Skinless Chicken
+    Breast Family Pack" -> "Chicken Breast")."""
+    if not name:
+        return ""
+    out = name
+    lowered = out.lower().strip()
+    for b in filter(None, [(brand or "").lower().strip(), *_FLYER_BRANDS]):
+        if lowered.startswith(b):
+            out = out[len(b):]
+            lowered = out.lower().strip()
+    out = _FLYER_NOISE.sub(" ", out)
+    out = re.sub(r"[,/]", " ", out)
+    return _WS_RE.sub(" ", out).strip(" -–—.")
+
+
+def match_flyer_name(name: str, brand: str | None = None) -> tuple[int | None, float]:
+    """Match a flyer product name against ingredient_master, trying both the
+    raw and qualifier-stripped forms; the higher-confidence match wins."""
+    raw_id, raw_conf = match_ingredient(name)
+    cleaned = normalize_flyer_name(name, brand)
+    if not cleaned or _norm(cleaned) == _norm(name):
+        return (raw_id, raw_conf)
+    clean_id, clean_conf = match_ingredient(cleaned)
+    if clean_conf > raw_conf:
+        return (clean_id, clean_conf)
+    return (raw_id, raw_conf)
 
 
 def _singular(token: str) -> str:

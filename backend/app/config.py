@@ -75,6 +75,11 @@ class Settings(BaseSettings):
     def critic_model_id(self) -> str:
         return self.critic_model or self.detail_model
 
+    # Debug: log the fully-assembled Stage 1 prompt (system layers + user
+    # message) for each generation. Loud + contains pantry contents — keep off
+    # in production except while auditing (Prompt 32 A2).
+    log_prompts: bool = False
+
     # CORS — comma-separated *extra* origins, merged with _DEFAULT_CORS_ORIGINS.
     # A bare "*" is ignored because it cannot be combined with credentials.
     cors_origins: str = ""

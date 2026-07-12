@@ -1,3 +1,4 @@
+import logging
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -8,12 +9,26 @@ from app.config import settings
 from app.database import engine
 from app.routers import auth, deals, pantry, prices, recipes, shopping, stats, stores
 
+logger = logging.getLogger(__name__)
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Startup: verify the database connection is reachable.
     async with engine.begin() as conn:
         await conn.execute(text("SELECT 1"))
+    # Model-selection guard (Prompt 32 A1): a stray RECIPE_MODEL env override to
+    # a Haiku-class model silently regressed Stage 1 concept quality in prod.
+    # Stage 1 is the creative step — it needs a Sonnet-class model or better.
+    if "haiku" in settings.recipe_model.lower():
+        logger.warning(
+            "RECIPE_MODEL=%s is a Haiku-class model. Stage 1 (concepts) quality "
+            "regresses on Haiku (clone anchors, incoherent dishes, sub-floor "
+            "macros — Prompt 32 audit). Set RECIPE_MODEL=claude-sonnet-4-6; "
+            "only Stage 2 details (DETAIL_MODEL) and the critic (CRITIC_MODEL) "
+            "are Haiku-safe.",
+            settings.recipe_model,
+        )
     yield
     # Shutdown: dispose of the connection pool.
     await engine.dispose()

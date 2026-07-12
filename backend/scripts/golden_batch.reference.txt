@@ -1,0 +1,88 @@
+============================================================================
+GOLDEN BATCH — default store: Lidl — Golden Fixture  (N=5, floor 54 g, calorie band 1100)
+============================================================================
+flyer matching (raw → normalized): Lidl 5→6 of 8; Stop & Shop 6→7 of 9
+per-stage models: concept_fix=claude-sonnet-4-6  concepts=claude-sonnet-4-6  critic=claude-haiku-4-5  detail_fix=claude-haiku-4-5  details=claude-haiku-4-5
+stage-1 prompt blocks: taste_notes=✓  LOVED/PASSED=✓  RECENTLY SHOWN=✓  direction=✓  pins=✓  market assignments=✓
+title-word check (>2 repeats): CLEAN
+
+#1 [easy] Charred Chicken Thigh Tacos
+    signature: anchor='chicken thighs' · format=tacos · cuisine=mexican
+    macros: 1122 cal / 78 g protein (calculated, cov 1.00)
+    critic: score=8 verdict=ship
+    flags:  ⚠ heavy: 1122 cal
+
+#2 [easy] Charred Chicken Breast Skillet
+    signature: anchor='chicken breast' · format=skillet · cuisine=italian
+    market pick: built around chicken breast, $1.99/lb
+    macros: 883 cal / 90 g protein (calculated, cov 1.00)
+    critic: score=8 verdict=ship
+    flags:  —
+
+#3 [medium] Ground Beef Weeknight Supper
+    signature: anchor='ground beef' · format=burgers · cuisine=american
+    market pick: built around ground beef, $3.49/lb
+    macros: 966 cal / 62 g protein (calculated, cov 1.00)
+    critic: score=8 verdict=ship
+    flags:  —
+
+#4 [medium] Golden Cauliflower with Crispy Cutlets
+    signature: anchor='cauliflower' · format=roast · cuisine=tex-mex
+    market pick: built around cauliflower, $2.49/each
+    macros: 678 cal / 44 g protein (calculated, cov 1.00)
+    critic: score=8 verdict=ship
+    flags:  ⚠ 44g protein — below your 54g target
+
+#5 [hard] Atlantic Salmon Fillets Harvest Plate
+    signature: anchor='atlantic salmon fillets' · format=sheet-pan · cuisine=asian
+    market pick: built around atlantic salmon fillets, $7.99/lb — at Stop & Shop
+    macros: 1064 cal / 70 g protein (calculated, cov 1.00)
+    critic: score=8 verdict=ship
+    flags:  —
+
+market anchors distinct: YES
+
+============================================================================
+GOLDEN BATCH — default store: Stop & Shop — Golden Fixture  (N=5, floor 54 g, calorie band 1100)
+============================================================================
+flyer matching (raw → normalized): Lidl 5→6 of 8; Stop & Shop 6→7 of 9
+per-stage models: concept_fix=claude-sonnet-4-6  concepts=claude-sonnet-4-6  critic=claude-haiku-4-5  detail_fix=claude-haiku-4-5  details=claude-haiku-4-5
+stage-1 prompt blocks: taste_notes=✓  LOVED/PASSED=✓  RECENTLY SHOWN=✓  direction=✓  pins=✓  market assignments=✓
+title-word check (>2 repeats): CLEAN
+
+#1 [easy] Charred Chicken Thigh Tacos
+    signature: anchor='chicken thighs' · format=tacos · cuisine=mexican
+    macros: 1122 cal / 78 g protein (calculated, cov 1.00)
+    critic: score=8 verdict=ship
+    flags:  ⚠ heavy: 1122 cal
+
+#2 [easy] Charred Atlantic Salmon Fillets Skillet
+    signature: anchor='atlantic salmon fillets' · format=skillet · cuisine=italian
+    market pick: built around atlantic salmon fillets, $7.99/lb
+    macros: 1064 cal / 70 g protein (calculated, cov 1.00)
+    critic: score=8 verdict=ship
+    flags:  —
+
+#3 [medium] Pork Loin Chops Weeknight Supper
+    signature: anchor='pork loin chops' · format=burgers · cuisine=american
+    market pick: built around pork loin chops, $2.49/lb
+    macros: 1036 cal / 72 g protein (calculated, cov 1.00)
+    critic: score=8 verdict=ship
+    flags:  —
+
+#4 [medium] Ground Turkey Family Feast
+    signature: anchor='ground turkey' · format=roast · cuisine=tex-mex
+    market pick: built around ground turkey, $3.99/lb
+    macros: 956 cal / 64 g protein (calculated, cov 1.00)
+    critic: score=8 verdict=ship
+    flags:  —
+
+#5 [hard] New York Strip Steak Harvest Plate
+    signature: anchor='new york strip steak' · format=sheet-pan · cuisine=asian
+    market pick: built around new york strip steak, $6.99/lb
+    macros: 760 cal / 58 g protein (est)
+    critic: score=8 verdict=ship
+    flags:  —
+
+market anchors distinct: YES
+

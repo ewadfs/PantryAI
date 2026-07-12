@@ -65,6 +65,11 @@ class Recipe(Base):
         Boolean, nullable=False, server_default=text("false")
     )
     market_anchor_json: Mapped[dict | None] = mapped_column(JSONB)
+    # Honesty flags a recipe ships with (Prompt 32 C): e.g.
+    # {"protein_below_floor": {"protein_g": 35, "floor_g": 54},
+    #  "heavy": {"calories": 1104, "cap": 1100, "daily_target": 2000}}.
+    # NULL/absent = clean. Rendered as visible amber chips on card + detail.
+    quality_flags_json: Mapped[dict | None] = mapped_column(JSONB)
     # rating: -1 thumbs down, 1 thumbs up, null unrated
     rating: Mapped[int | None] = mapped_column(SmallInteger)
     generated_at: Mapped[datetime] = mapped_column(

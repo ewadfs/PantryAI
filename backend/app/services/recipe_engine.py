@@ -42,6 +42,9 @@ _CONTEXT_DEALS = 30            # relevant deals shown to the model (of 400+)
 _RECENT_TITLES = 15
 _USE_SOON_WINDOW_DAYS = 2
 _STAPLE_DEAL_CATS = {"meat", "seafood", "produce", "dairy"}
+# Calorie band (Prompt 32 C7): one serving may not exceed this fraction of the
+# daily calorie target without a rebalance attempt + an honest "heavy" chip.
+_CAL_BAND = 0.55
 
 # Shared technique + honesty rules injected into both prompts.
 _TECHNIQUE_RULES = """\
@@ -79,6 +82,10 @@ Hard requirements:
 9. The concepts must be mutually distinct dinners — each must differ from EVERY other \
 in this batch on at least TWO of the three signature axes \
 {anchor_ingredient, dish_format, cuisine}. No two near-identical dishes.
+10. TITLE DIVERSITY — titles are distinct headlines: no signature word may appear \
+in more than 2 titles in a batch. Taste notes inform TECHNIQUE, not naming — \
+"loves char" means hard sears happen in the method, NOT that 'Charred' headlines \
+every title.
 
 """
     + _TECHNIQUE_RULES
@@ -202,10 +209,9 @@ def _use_soon(item: PantryItem, today: date) -> bool:
     return False
 
 
-async def _default_store(
-    db: AsyncSession, user_id: int
-) -> tuple[int | None, str | None, str | None, str | None]:
-    """(chain_id, chain_name, store_name, region_key) of the user's default store.
+async def _saved_stores(db: AsyncSession, user_id: int) -> list:
+    """The user's saved stores, DEFAULT FIRST, deduped by (chain, region).
+    Rows carry (chain_id, chain_name, store_name, region_key).
 
     Self-healing (Prompt 31): a partial unique index should guarantee exactly one
     default, but if the data is ever inconsistent (multiple defaults, or none with
@@ -227,7 +233,7 @@ async def _default_store(
         )
     ).all()
     if not rows:
-        return (None, None, None, None)
+        return []
     defaults = [r for r in rows if r.is_default]
     if len(defaults) == 1:
         chosen = defaults[0]
@@ -243,7 +249,16 @@ async def _default_store(
             user_id, len(rows),
         )
         chosen = rows[0]
-    return (chosen.chain_id, chosen.chain_name, chosen.store_name, chosen.region_key)
+    ordered = [chosen] + [r for r in rows if r is not chosen]
+    seen: set[tuple] = set()
+    deduped = []
+    for r in ordered:
+        k = (r.chain_id, r.region_key)
+        if k in seen:
+            continue
+        seen.add(k)
+        deduped.append(r)
+    return deduped
 
 
 async def _all_current_deals(
@@ -352,100 +367,232 @@ def _market_slot_count(n: int, anchors: int) -> int:
     return min(slots, n)
 
 
-def _select_market_deals(
-    all_deals: list[DealCache],
-    count: int,
-    exclude_iids: set[int],
-    pantry_iids: set[int],
-    exclude_terms: list[str] | None = None,
-) -> list[DealCache]:
-    """Pick ``count`` distinct deal anchors: proteins then hero produce, matched
-    to an ingredient and savings-ranked, never something already in the pantry.
-    Prefers anchors NOT used as market picks in recent batches (rotation, A5),
-    backfilling with recent ones only if there aren't enough fresh alternatives.
+def _hero_produce_name(name_tokens: set[str]) -> bool:
+    """Does a (normalized) deal name look like hero produce? True when every
+    token of some hero entry appears in the name ('butternut squash medley')."""
+    for hero in _HERO_PRODUCE:
+        h_tokens = set(ingredient_matcher._tokens(hero.replace("_", " ")))
+        if h_tokens and h_tokens <= name_tokens:
+            return True
+    return False
 
-    ``exclude_terms`` (Prompt 30): when a counted direction caps some categories,
-    surplus market picks must be in UNREQUESTED categories — so drop any deal
-    whose product/ingredient name mentions a requested term (e.g. 'beef')."""
-    if count <= 0:
-        return []
+
+# Deal names in an anchor category that still can't anchor a dinner — breading,
+# sauces, sides, snacks. Light sanity filter for the WIDENED pool (Prompt 32 3b).
+_NON_ANCHOR_RE = re.compile(
+    r"\b(?:breading|bread\s*crumbs?|batter|coating|sauce|marinade|dressing|"
+    r"seasoning|rub|spice|gravy|dip|salsa|hummus|broth|stock|bouillon|base|"
+    r"juice|drink|smoothie|snack|chips?|sticks?|nuggets?|poppers|jerky|"
+    r"croutons?|topping|glaze|paste|powder|mix|kit|salad\s+kit|deli|"
+    r"lunch\s*meat|cold\s+cuts?|sliced\s+to\s+order)\b",
+    re.IGNORECASE,
+)
+
+
+@dataclass
+class MarketCandidate:
+    """One viable market-pick anchor. ``iid`` is None for widened-pool deals
+    that never matched ingredient_master — anchoring only needs the deal's
+    name/category/price; ingredient matching stays required only for pantry
+    math (Prompt 32 3b)."""
+
+    deal: DealCache
+    store: str | None            # chain the deal belongs to
+    iid: int | None              # matched ingredient id, when there is one
+    key: str                     # stable anchor identity for rotation/dedup
+    tier: int                    # 0 proteins, 1 hero produce, 2 other produce
+    cross_store: bool = False    # anchored at a saved store other than default
+    repeat: bool = False         # deliberate repeat after full-pool exhaustion
+
+    @property
+    def clean_name(self) -> str:
+        return ingredient_matcher.normalize_flyer_name(
+            self.deal.product_name or "", self.deal.brand
+        )
+
+
+def _market_candidates(
+    deals: list[DealCache],
+    pantry_iids: set[int],
+    pantry_norms: set[str],
+    store: str | None,
+    cross_store: bool = False,
+    exclude_terms: list[str] | None = None,
+) -> list[MarketCandidate]:
+    """The WIDENED anchor pool for one store (Prompt 32 3b): ingredient-matched
+    deals ∪ any current deal whose extraction category is meat/seafood/produce
+    and whose name passes a light non-anchor sanity filter. Proteins rank
+    first, then hero produce, by savings_pct with a null-safe fallback to
+    absolute price. Never something already in the pantry; distinct anchors.
+
+    ``exclude_terms`` (Prompt 30): a counted direction caps categories, so
+    surplus market picks must avoid the requested terms."""
     hero = _hero_produce_iids()
     terms = [t.lower() for t in (exclude_terms or [])]
+    out: list[MarketCandidate] = []
+    seen: set[str] = set()
 
-    def is_requested(d: DealCache) -> bool:
-        blob = f"{d.product_name or ''}".lower()
-        return any(t in blob for t in terms)
-
-    def tier(d: DealCache) -> int:
-        cat = (d.category or "").lower()
-        if cat in {"meat", "seafood"}:
-            return 0  # proteins lead
-        if cat == "produce" and d.matched_ingredient_id in hero:
-            return 1  # hero produce (cauliflower, squash, potato…)
-        if cat == "produce":
-            return 2  # other produce, last resort
-        return 9
-
-    candidates = [
-        d
-        for d in all_deals
-        if d.matched_ingredient_id is not None
-        and d.sale_price is not None  # a market pick must cite a real price
-        and d.matched_ingredient_id not in pantry_iids
-        and tier(d) < 9
-        and not is_requested(d)
-    ]
-    # Quality tier first, then higher savings within a tier.
-    candidates.sort(
-        key=lambda d: (tier(d), -(float(d.savings_pct) if d.savings_pct is not None else 0.0))
-    )
-    ordered: list[DealCache] = []
-    seen: set[int] = set()
-    for d in candidates:
-        iid = d.matched_ingredient_id
-        if iid in seen:
+    for d in deals:
+        if d.sale_price is None:  # a market pick must cite a real price
             continue
-        seen.add(iid)
-        ordered.append(d)
-    fresh = [d for d in ordered if d.matched_ingredient_id not in exclude_iids]
-    stale = [d for d in ordered if d.matched_ingredient_id in exclude_iids]
-    chosen = fresh[:count]
-    if len(chosen) < count:
-        chosen += stale[: count - len(chosen)]  # rotation backfill
+        name = d.product_name or ""
+        cat = (d.category or "").lower()
+        iid = d.matched_ingredient_id
+        if terms and any(t in name.lower() for t in terms):
+            continue
+        clean = ingredient_matcher.normalize_flyer_name(name, d.brand)
+        norm = ingredient_matcher._norm(clean or name)
+        tokens = set(ingredient_matcher._tokens(clean or name))
+
+        if cat in {"meat", "seafood"}:
+            tier = 0
+        elif cat == "produce":
+            tier = 1 if (iid in hero or _hero_produce_name(tokens)) else 2
+        else:
+            continue  # anchor categories only, matched or not
+        if _NON_ANCHOR_RE.search(name):
+            continue  # breading, sauces, kits — not dinner anchors
+        # Never anchor on something the user already owns.
+        if (iid is not None and iid in pantry_iids) or (norm and norm in pantry_norms):
+            continue
+
+        key = f"i{iid}" if iid is not None else f"n:{norm}"
+        if not norm or key in seen:
+            continue
+        seen.add(key)
+        out.append(
+            MarketCandidate(
+                deal=d, store=store, iid=iid, key=key, tier=tier,
+                cross_store=cross_store,
+            )
+        )
+
+    def rank(c: MarketCandidate):
+        sav = float(c.deal.savings_pct) if c.deal.savings_pct is not None else None
+        # savings-ranked; unknown savings fall back to absolute price (cheap first)
+        return (
+            c.tier,
+            0 if sav is not None else 1,
+            -(sav or 0.0),
+            float(c.deal.sale_price),
+        )
+
+    out.sort(key=rank)
+    return out
+
+
+def _select_market_anchors(
+    primary: list[MarketCandidate],
+    other_stores: list[list[MarketCandidate]],
+    count: int,
+    exclude_keys: set[str],
+) -> list[MarketCandidate]:
+    """Pick ``count`` DISTINCT anchors. Order: the anchored store's fresh
+    candidates (not used in recent batches, 28-A5 rotation), then its
+    recently-used ones, then each other saved store's (sparse-store fallback,
+    Prompt 32 #4, clearly labeled). Tier-2 produce (an apple can't anchor a
+    dinner) backfills only after every store's proteins + hero produce are
+    exhausted. Only after every saved store's whole pool is exhausted may an
+    anchor repeat — marked so the disclosure is forced."""
+    if count <= 0:
+        return []
+    chosen: list[MarketCandidate] = []
+    used: set[str] = set()
+
+    def take(pool: list[MarketCandidate], fresh_only: bool, max_tier: int) -> None:
+        for c in pool:
+            if len(chosen) >= count:
+                return
+            if c.key in used or c.tier > max_tier:
+                continue
+            if fresh_only and c.key in exclude_keys:
+                continue
+            used.add(c.key)
+            chosen.append(c)
+
+    for max_tier in (1, 2):  # proteins + hero produce everywhere, THEN tier-2
+        take(primary, True, max_tier)
+        take(primary, False, max_tier)  # rotation backfill at the anchored store
+        for pool in other_stores:
+            take(pool, True, max_tier)
+            take(pool, False, max_tier)
+
+    # Every saved store exhausted — anchors may repeat, with disclosure.
+    base = list(chosen)
+    i = 0
+    while base and len(chosen) < count:
+        c = base[i % len(base)]
+        chosen.append(
+            MarketCandidate(
+                deal=c.deal, store=c.store, iid=c.iid, key=c.key, tier=c.tier,
+                cross_store=c.cross_store, repeat=True,
+            )
+        )
+        i += 1
     return chosen
 
 
-def _market_block(deals: list[DealCache], chain_name: str | None) -> str:
-    if not deals:
+def _market_block(cands: list[MarketCandidate], chain_name: str | None) -> str:
+    if not cands:
         return ""
     lines = []
-    for d in deals:
+    for i, c in enumerate(cands, 1):
+        d = c.deal
         unit = f"/{d.price_unit}" if d.price_unit else ""
         sav = f", {d.savings_pct}% off" if d.savings_pct is not None else ""
-        lines.append(f"- {d.product_name}: ${d.sale_price}{unit}{sav}")
+        at = (
+            f" — at {c.store}" if c.cross_store and c.store
+            else ""
+        )
+        rep = (
+            " [REPEAT ANCHOR — every distinct sale anchor across the saved "
+            "stores is already in use tonight; say so in why_this_recipe]"
+            if c.repeat
+            else ""
+        )
+        lines.append(
+            f"- MARKET PICK {i}: build around {d.product_name}: "
+            f"${d.sale_price}{unit}{sav}{at}{rep}"
+        )
     return (
-        f"\n\nMARKET PICKS — this batch MUST include exactly {len(deals)} MARKET PICK "
-        f"concept(s). A market pick is a dinner ANCHORED on a strong current deal at "
-        f"{chain_name or 'the store'} that the user does NOT own — it is the intentional "
-        "purchase of the week, chosen to LEAD the recipe (not fill a gap). Build each "
-        "market pick around ONE of these deal anchors, then surround it with pantry "
-        "items:\n" + "\n".join(lines) + "\n"
-        "For each market-pick concept: set anchor_ingredient to that deal item, set "
-        "\"market_pick\": true, and in why_this_recipe name the deal and its price "
-        "(e.g. \"built around pork shoulder at $1.99/lb this week\"). The pantry-first "
-        "rule (#2) is WAIVED for a market pick's anchor — buying it is the point. Every "
-        "OTHER concept stays pantry-first. No two market picks may share an anchor."
+        f"\n\nMARKET PICKS — this batch MUST include exactly {len(cands)} MARKET PICK "
+        "concept(s), one per ASSIGNED anchor below. A market pick is a dinner ANCHORED "
+        f"on a strong current deal at {chain_name or 'the store'} (or the labeled "
+        "store) that the user does NOT own — the intentional purchase of the week, "
+        "chosen to LEAD the recipe:\n" + "\n".join(lines) + "\n"
+        "Each market pick uses EXACTLY its assigned anchor — never substitute, and "
+        "never build two market picks on the same anchor. Set anchor_ingredient to "
+        "the assigned item, set \"market_pick\": true, and in why_this_recipe name "
+        "the deal and its price (e.g. \"built around pork shoulder at $1.99/lb this "
+        "week\") — and, when the anchor is at a different store, name that store. "
+        "The pantry-first rule (#2) is WAIVED for a market pick's anchor — buying it "
+        "is the point. Every OTHER concept stays pantry-first."
     )
 
 
-def _is_market_anchor(anchor_name: str, market_iids: set[int], pantry_iids: set[int]) -> int | None:
-    """If ``anchor_name`` matches a designated market deal the user doesn't own,
-    return its ingredient id, else None."""
-    if not anchor_name:
+def _match_candidate(
+    anchor_name: str, cands: list[MarketCandidate], pantry_iids: set[int]
+) -> MarketCandidate | None:
+    """The designated market candidate ``anchor_name`` refers to, if any.
+    Ingredient-id match first; widened (unmatched) candidates match by token
+    overlap against the qualifier-stripped deal name."""
+    if not anchor_name or not cands:
         return None
     iid, _c = ingredient_matcher.match_ingredient(anchor_name)
-    if iid is not None and iid in market_iids and iid not in pantry_iids:
-        return iid
+    if iid is not None and iid not in pantry_iids:
+        for c in cands:
+            if c.iid is not None and c.iid == iid:
+                return c
+    a_tokens = set(ingredient_matcher._tokens(anchor_name))
+    if not a_tokens:
+        return None
+    for c in cands:
+        c_tokens = set(ingredient_matcher._tokens(c.clean_name or c.deal.product_name or ""))
+        if not c_tokens:
+            continue
+        overlap = len(a_tokens & c_tokens) / len(a_tokens | c_tokens)
+        if a_tokens <= c_tokens or c_tokens <= a_tokens or overlap >= 0.5:
+            return c
     return None
 
 
@@ -642,6 +789,10 @@ Judge against this rubric:
    spices don't survive long hard sears (bloom later); "crispy" needs dry surfaces;
    covered things don't crisp.
 2. FLAVOR COHERENCE — a defensible culinary logic (fusion fine, randomness not).
+   The test: would a competent home cook CHOOSE to make this dish? Ingredient
+   substitutions that undermine the dish's identity (naan as taco shells, pancake
+   "lasagna") FAIL. Rate coherence on its own 1-10: below 6 means include 2 in
+   fail_rubrics — it is a hard fail.
 3. STARCH/SHAPE LOGIC — chunky sauces get gripping shapes (rigatoni, penne), silky
    sauces get ribbons; rice type matches the dish tradition where possible.
 4. PROTEIN FLOOR — per-serving protein ≥ the stated floor.
@@ -656,8 +807,8 @@ Judge against this rubric:
 Return ONLY valid JSON:
 {"reviews":[{"index":0-based, "score":1-10, "verdict":"ship"|"revise",
 "fail_rubrics":[ints of failed rubric numbers], "worst_issues":[short strings]}]}
-Be strict: a concept that fails rubric 1, 4, 5, or 6, or scores below 7 overall, is
-"revise"."""
+Be strict: a concept that fails rubric 1, 2, 4, 5, or 6, or scores below 7 overall,
+is "revise"."""
 
 
 @dataclass
@@ -669,6 +820,10 @@ class _Ctx:
     context_text: str
     pin_block: str = ""
     protein_floor: int = 0
+    # Calorie band (Prompt 32 C7): a serving above this many calories
+    # (55% of the daily target) triggers a portion-rebalance regeneration.
+    calorie_cap: int = 0
+    calorie_target: int = 0
     taste_block: str = ""
     history_block: str = ""
     variety_block: str = ""
@@ -676,8 +831,14 @@ class _Ctx:
     pantry_by_iid: dict[int, PantryItem] = field(default_factory=dict)
     pantry_by_norm: dict[str, PantryItem] = field(default_factory=dict)
     all_deals: list[DealCache] = field(default_factory=list)
-    # Deals designated as this batch's market-pick anchors (Prompt 28 A).
-    market_deals: list[DealCache] = field(default_factory=list)
+    # Other saved stores' current deals: [(chain_name, deals)] — the sparse-store
+    # fallback pool for market anchors (Prompt 32 #4).
+    other_store_deals: list[tuple[str | None, list[DealCache]]] = field(
+        default_factory=list
+    )
+    # Candidates designated as this batch's market-pick anchors (Prompt 28 A,
+    # widened + per-slot assigned in Prompt 32 B).
+    market_candidates: list[MarketCandidate] = field(default_factory=list)
 
 
 async def _resolve_pins(
@@ -748,10 +909,21 @@ async def _load_context(db: AsyncSession, user: User) -> _Ctx:
         .all()
     )
 
-    chain_id, chain_name, store_name, region_key = await _default_store(db, user.id)
+    stores = await _saved_stores(db, user.id)
+    default = stores[0] if stores else None
+    chain_name = default.chain_name if default else None
+    store_name = default.store_name if default else None
     all_deals = (
-        await _all_current_deals(db, chain_id, today, region_key) if chain_id else []
+        await _all_current_deals(db, default.chain_id, today, default.region_key)
+        if default
+        else []
     )
+    # Other saved stores' deals: the sparse-store fallback anchor pool (P32 #4).
+    other_store_deals: list[tuple[str | None, list[DealCache]]] = []
+    for s in stores[1:]:
+        deals_s = await _all_current_deals(db, s.chain_id, today, s.region_key)
+        if deals_s:
+            other_store_deals.append((s.chain_name, deals_s))
     deal_by_ingredient: dict[int, DealCache] = {}
     for d in all_deals:
         iid = d.matched_ingredient_id
@@ -777,10 +949,13 @@ async def _load_context(db: AsyncSession, user: User) -> _Ctx:
     return _Ctx(
         pantry, chain_name, store_name, deal_by_ingredient, context_text,
         protein_floor=floor,
+        calorie_cap=round(user.calorie_target * _CAL_BAND),
+        calorie_target=user.calorie_target,
         taste_block=_taste_block(user.taste_notes),
         pantry_by_iid=pantry_by_iid,
         pantry_by_norm=pantry_by_norm,
         all_deals=list(all_deals),
+        other_store_deals=other_store_deals,
     )
 
 
@@ -934,9 +1109,10 @@ async def _build_taste_history(
     return history_block, variety_block, recent_struct
 
 
-async def _recent_market_anchors(db: AsyncSession, user_id: int) -> set[int]:
-    """Ingredient ids used as market-pick anchors in the last few batches, so a
-    new batch can rotate to different deals (A5)."""
+async def _recent_market_anchors(db: AsyncSession, user_id: int) -> set[str]:
+    """Anchor keys used as market picks in the last few batches, so a new batch
+    can rotate to different deals (A5). Keys are ``anchor_key`` when present
+    (Prompt 32) with a legacy fallback to the ingredient id."""
     cutoff = _now() - timedelta(hours=_RECENT_HOURS)
     rows = (
         (
@@ -951,11 +1127,15 @@ async def _recent_market_anchors(db: AsyncSession, user_id: int) -> set[int]:
         .scalars()
         .all()
     )
-    iids: set[int] = set()
+    keys: set[str] = set()
     for a in rows:
-        if isinstance(a, dict) and isinstance(a.get("ingredient_id"), int):
-            iids.add(a["ingredient_id"])
-    return iids
+        if not isinstance(a, dict):
+            continue
+        if isinstance(a.get("anchor_key"), str):
+            keys.add(a["anchor_key"])
+        elif isinstance(a.get("ingredient_id"), int):
+            keys.add(f"i{a['ingredient_id']}")
+    return keys
 
 
 def _build_context(
@@ -1040,6 +1220,7 @@ def recipe_to_read(recipe: Recipe) -> dict:
         "cost": _cost_from_ingredients(cost_source),
         "is_market_pick": bool(recipe.is_market_pick),
         "market_anchor": recipe.market_anchor_json,
+        "quality_flags": recipe.quality_flags_json,
     }
 
 
@@ -1171,8 +1352,9 @@ def _needs_revision(
         if str(x).strip().lstrip("-").isdigit()
     }
     # A market pick's anchor is an intentional purchase — a lone rubric-6
-    # (pantry-realism) flag on it is expected, not a defect.
-    hard_set = {1, 4, 5} if is_market else {1, 4, 5, 6}
+    # (pantry-realism) flag on it is expected, not a defect. Rubric 2 (flavor
+    # coherence, the would-a-home-cook-make-this test) is a hard fail (P32 D8).
+    hard_set = {1, 2, 4, 5} if is_market else {1, 2, 4, 5, 6}
     # Prompt 30: with an enumerated direction, a PROFILE-FIT (rubric 7) fail is a
     # slot-contract violation (a cap exceeded / undisclosed merge) — a hard fail.
     if enforce_contract:
@@ -1222,7 +1404,7 @@ async def _run_critic(
     data = await _call_json(
         client, model=settings.critic_model_id, max_tokens=1200,
         system=_cached_system(_CRITIC_SYSTEM), user_msg=user_msg,
-        category="critic",
+        category="critic", stage="critic",
     )
     reviews = data.get("reviews") if isinstance(data, dict) else None
     return reviews if isinstance(reviews, list) else []
@@ -1253,7 +1435,7 @@ async def _regen_concept(
     msg = f"{ctx_text}{correction}\n\nConcept to fix:\n{prior}\n\nReturn the fixed concept now."
     data = await _call_json(
         client, model=settings.recipe_model, max_tokens=_CONCEPT_MAX_TOKENS,
-        system=base_system, user_msg=msg, category="generation",
+        system=base_system, user_msg=msg, category="generation", stage="concept_fix",
     )
     recs = data.get("recipes") if isinstance(data, dict) else None
     if isinstance(recs, list) and recs and isinstance(recs[0], dict):
@@ -1370,7 +1552,7 @@ async def _regen_for_variety(
     msg = f"{ctx_text}{correction}\n\nConcept that repeats:\n{prior}\n\nReturn the fresh concept now."
     data = await _call_json(
         client, model=settings.recipe_model, max_tokens=_CONCEPT_MAX_TOKENS,
-        system=base_system, user_msg=msg, category="generation",
+        system=base_system, user_msg=msg, category="generation", stage="concept_fix",
     )
     recs = data.get("recipes") if isinstance(data, dict) else None
     if isinstance(recs, list) and recs and isinstance(recs[0], dict):
@@ -1408,7 +1590,7 @@ async def _regen_for_contract(
     msg = f"{ctx_text}{correction}\n\nConcept to replace:\n{prior}\n\nReturn the replacement now."
     data = await _call_json(
         client, model=settings.recipe_model, max_tokens=_CONCEPT_MAX_TOKENS,
-        system=base_system, user_msg=msg, category="generation",
+        system=base_system, user_msg=msg, category="generation", stage="concept_fix",
     )
     recs = data.get("recipes") if isinstance(data, dict) else None
     if isinstance(recs, list) and recs and isinstance(recs[0], dict):
@@ -1469,9 +1651,15 @@ async def _enforce_variety(
     recent_sigs: list[dict],
     base_system: str,
     ctx_text: str,
+    market_pool_exhausted: bool = True,
 ) -> list[dict]:
     """Regenerate (once) any concept whose signature repeats a recent one — or an
-    earlier concept in this same batch — on 2+ of the 3 axes."""
+    earlier concept in this same batch — on 2+ of the 3 axes.
+
+    ``market_pool_exhausted``: whether the WIDENED market-anchor pool has no
+    unused candidates left. The "pantry's too small" relaxation note may only
+    fire when that pool was genuinely exhausted — never as cover for selector
+    starvation (Prompt 32 3d)."""
     sigs = [_concept_sig(c) for c in concepts]
     collide: list[int] = []
     for i, s in enumerate(sigs):
@@ -1501,13 +1689,218 @@ async def _enforce_variety(
             anchor = s.get("anchor_ingredient") or "a pantry staple"
             w = (concepts[i].get("why_this_recipe") or "").strip()
             if not any(m in w.lower() for m in _RELAX_MARKERS):
-                note = (
-                    f"Another take on {anchor} — the pantry's too small for a fully "
-                    "fresh anchor tonight, so this reshapes it instead."
-                )
+                if market_pool_exhausted:
+                    note = (
+                        f"Another take on {anchor} — the pantry's too small for a "
+                        "fully fresh anchor tonight, so this reshapes it instead."
+                    )
+                else:
+                    # Unused deal anchors still exist — the small-pantry claim
+                    # would be false. Disclose the repeat without the excuse.
+                    note = f"Another take on {anchor}, reshaped as a different dish."
                 concepts[i]["why_this_recipe"] = f"{w} {note}".strip()
             logger.info("Concept %r kept a repeated anchor after variety retry; "
-                        "relaxation disclosed", concepts[i].get("title"))
+                        "relaxation disclosed (market pool exhausted: %s)",
+                        concepts[i].get("title"), market_pool_exhausted)
+    return concepts
+
+
+# --------------------------------------------------------------------------- #
+# Within-batch market anchor diversity (Prompt 32 B3)
+# --------------------------------------------------------------------------- #
+async def _regen_for_market_anchor(
+    client: AsyncAnthropic,
+    concept: dict,
+    cand: MarketCandidate,
+    base_system: list[dict] | str,
+    ctx_text: str,
+) -> dict:
+    d = cand.deal
+    unit = f"/{d.price_unit}" if d.price_unit else ""
+    at = f" at {cand.store}" if cand.store else ""
+    tier = (concept.get("difficulty") or "").strip() or "the same"
+    correction = (
+        "\n\nMARKET ANCHOR COLLISION: two market picks in tonight's batch anchored "
+        "on the SAME deal. Market picks in one batch must use DIFFERENT anchors. "
+        "Return ONE replacement MARKET PICK concept as JSON "
+        '{"recipes":[{...same shape...}]} built around this assigned deal instead: '
+        f"{d.product_name}: ${d.sale_price}{unit}{at}. Set anchor_ingredient to it, "
+        'set "market_pick": true, and name the deal, its price'
+        + (", and the store" if cand.cross_store else "")
+        + f" in why_this_recipe. Keep the SAME difficulty tier ('{tier}'). "
+        "Surround the anchor with items actually in their kitchen."
+    )
+    prior = json.dumps(_concept_brief(concept), ensure_ascii=False)
+    msg = f"{ctx_text}{correction}\n\nConcept to replace:\n{prior}\n\nReturn the replacement now."
+    data = await _call_json(
+        client, model=settings.recipe_model, max_tokens=_CONCEPT_MAX_TOKENS,
+        system=base_system, user_msg=msg, category="generation", stage="concept_fix",
+    )
+    recs = data.get("recipes") if isinstance(data, dict) else None
+    if isinstance(recs, list) and recs and isinstance(recs[0], dict):
+        return recs[0]
+    return concept
+
+
+async def _enforce_market_diversity(
+    client: AsyncAnthropic,
+    concepts: list[dict],
+    cands: list[MarketCandidate],
+    pantry_iids: set[int],
+    base_system: list[dict] | str,
+    ctx_text: str,
+) -> list[dict]:
+    """Market-pick slots in the SAME batch must use DIFFERENT anchors whenever
+    ≥2 viable candidates exist (Prompt 32 B3 — three cauliflower slots proved
+    the cross-batch rotation alone doesn't cover this). Deterministic backstop:
+    duplicates are regenerated once, each re-pointed at a specific UNUSED
+    assigned anchor; a repeat may stand only when the pool itself repeats
+    (marked ``repeat=True`` after full exhaustion) and then must disclose."""
+    if not cands:
+        return concepts
+    matched: dict[int, MarketCandidate] = {}
+    for i, c in enumerate(concepts):
+        cand = _match_candidate(c.get("anchor_ingredient") or "", cands, pantry_iids)
+        if cand is not None:
+            matched[i] = cand
+
+    used_keys: set[str] = set()
+    dup_idx: list[int] = []
+    for i in sorted(matched):
+        k = matched[i].key
+        if k in used_keys:
+            dup_idx.append(i)
+        else:
+            used_keys.add(k)
+    # Allow exactly as many repeats as the selector itself marked (exhaustion).
+    allowed_repeats = sum(1 for c in cands if c.repeat)
+    dup_idx = dup_idx[allowed_repeats:] if allowed_repeats else dup_idx
+    if not dup_idx:
+        return concepts
+
+    unused = [c for c in cands if not c.repeat and c.key not in used_keys]
+    jobs: list[tuple[int, MarketCandidate]] = []
+    for i in dup_idx:
+        if not unused:
+            break
+        jobs.append((i, unused.pop(0)))
+    if jobs:
+        fixed = await asyncio.gather(
+            *(
+                _regen_for_market_anchor(client, concepts[i], cand, base_system, ctx_text)
+                for i, cand in jobs
+            ),
+            return_exceptions=True,
+        )
+        for (i, cand), res in zip(jobs, fixed):
+            if isinstance(res, dict):
+                concepts[i] = res
+                used_keys.add(cand.key)
+        logger.info(
+            "Market diversity: re-anchored %d duplicate market pick(s): %s",
+            len(jobs), [i for i, _ in jobs],
+        )
+    # Any duplicate left had NO unused candidate — the pool is genuinely
+    # exhausted; force the existing repeat disclosure.
+    for i in dup_idx[len(jobs):]:
+        anchor = concepts[i].get("anchor_ingredient") or "tonight's deal"
+        w = (concepts[i].get("why_this_recipe") or "").strip()
+        if "repeat" not in w.lower() and "already" not in w.lower():
+            note = (
+                f"Intentionally repeats the {anchor} deal — every distinct sale "
+                "anchor across your saved stores is already in use tonight."
+            )
+            concepts[i]["why_this_recipe"] = f"{w} {note}".strip()
+    return concepts
+
+
+# --------------------------------------------------------------------------- #
+# Title diversity (Prompt 32 D9)
+# --------------------------------------------------------------------------- #
+_TITLE_STOPWORDS = {
+    "a", "an", "the", "and", "with", "of", "in", "on", "for", "over", "under",
+    "au", "aux", "al", "alla", "de", "la", "le", "el", "du", "des", "et", "di",
+    "e", "da", "style", "night", "dinner", "weeknight",
+}
+
+
+def _title_words(title: str) -> set[str]:
+    return {
+        t
+        for t in ingredient_matcher._tokens(title or "")
+        if len(t) > 2 and t not in _TITLE_STOPWORDS and not t.isdigit()
+    }
+
+
+def _overused_title_words(titles: list[str], limit: int = 2) -> dict[str, list[int]]:
+    """Words appearing in more than ``limit`` titles -> the title indices."""
+    where: dict[str, list[int]] = {}
+    for i, t in enumerate(titles):
+        for w in _title_words(t):
+            where.setdefault(w, []).append(i)
+    return {w: idxs for w, idxs in where.items() if len(idxs) > limit}
+
+
+async def _enforce_title_diversity(
+    client: AsyncAnthropic, concepts: list[dict]
+) -> list[dict]:
+    """No signature word in more than 2 titles per batch (Prompt 32 D9 — the
+    'Charred everything' fixture). Deterministic detection; offenders beyond
+    the first two keep their dish but get retitled in one cheap call."""
+    titles = [str(c.get("title") or "") for c in concepts]
+    over = _overused_title_words(titles)
+    if not over:
+        return concepts
+    offenders: list[int] = []
+    for w, idxs in over.items():
+        offenders.extend(idxs[2:])  # first two titles keep the word
+    offenders = sorted(set(offenders))
+    banned = sorted(over.keys())
+    briefs = [
+        {
+            "index": i,
+            "title": titles[i],
+            "description": concepts[i].get("description"),
+            "anchor_ingredient": concepts[i].get("anchor_ingredient"),
+            "cuisine": concepts[i].get("cuisine"),
+        }
+        for i in offenders
+    ]
+    msg = (
+        "These dinner concepts share overused title words with others in the same "
+        f"batch. Rewrite ONLY their titles. Banned words (already in 2 other titles): "
+        f"{', '.join(banned)}. Keep each title honest to its dish (anchor, format, "
+        "cuisine), appetizing, ≤ 8 words, and free of every banned word. Taste notes "
+        "inform technique, not naming.\n\n"
+        f"{json.dumps(briefs, ensure_ascii=False)}\n\n"
+        'Return ONLY valid JSON: {"titles": [{"index": <int>, "title": "<new title>"}]}'
+    )
+    data = await _call_json(
+        client, model=settings.recipe_model, max_tokens=400,
+        system="You retitle dinner concepts. Return only the requested JSON.",
+        user_msg=msg, category="generation", stage="concept_fix",
+    )
+    items = data.get("titles") if isinstance(data, dict) else None
+    if isinstance(items, list):
+        for it in items:
+            if not isinstance(it, dict):
+                continue
+            try:
+                i = int(it.get("index"))
+            except (TypeError, ValueError):
+                continue
+            new_title = str(it.get("title") or "").strip()
+            if i in offenders and new_title and not (
+                _title_words(new_title) & set(banned)
+            ):
+                concepts[i]["title"] = new_title
+    still = _overused_title_words([str(c.get("title") or "") for c in concepts])
+    if still:
+        logger.warning("Title diversity: word(s) still overused after retitle: %s",
+                       sorted(still))
+    else:
+        logger.info("Title diversity: retitled %d concept(s); banned %s",
+                    len(offenders), banned)
     return concepts
 
 
@@ -1571,15 +1964,42 @@ async def generate_concepts(
     else:
         market_slots = _market_slot_count(n, len(census))
     recent_market = await _recent_market_anchors(db, user.id)
-    ctx.market_deals = _select_market_deals(
-        ctx.all_deals, market_slots, recent_market, pantry_iids,
-        exclude_terms=requested_terms if enumerated else None,
+    pantry_norms = set(ctx.pantry_by_norm.keys())
+    exclude_terms = requested_terms if enumerated else None
+    primary_pool = _market_candidates(
+        ctx.all_deals, pantry_iids, pantry_norms, store=ctx.chain_name,
+        exclude_terms=exclude_terms,
     )
-    market_iids = {d.matched_ingredient_id for d in ctx.market_deals}
+    other_pools = [
+        _market_candidates(
+            deals, pantry_iids, pantry_norms, store=name, cross_store=True,
+            exclude_terms=exclude_terms,
+        )
+        for name, deals in ctx.other_store_deals
+    ]
+    ctx.market_candidates = _select_market_anchors(
+        primary_pool, other_pools, market_slots, recent_market
+    )
+    # Is the WIDENED pool (across every saved store) genuinely exhausted after
+    # this selection? Gates the "pantry's too small" relaxation note (P32 3d).
+    chosen_keys = {c.key for c in ctx.market_candidates}
+    pool_exhausted = not any(
+        c.key not in chosen_keys
+        for pool in [primary_pool, *other_pools]
+        for c in pool
+    )
     logger.info(
-        "Market picks: n=%d pantry_anchors=%d slots=%d selected=%s",
-        n, len(census), market_slots,
-        [d.product_name for d in ctx.market_deals],
+        "Market picks: n=%d pantry_anchors=%d slots=%d pool=%d(+%d other-store) "
+        "selected=%s pool_exhausted=%s",
+        n, len(census), market_slots, len(primary_pool),
+        sum(len(p) for p in other_pools),
+        [
+            f"{c.deal.product_name} @ ${c.deal.sale_price}"
+            + (f" [{c.store}]" if c.cross_store else "")
+            + (" [repeat]" if c.repeat else "")
+            for c in ctx.market_candidates
+        ],
+        pool_exhausted,
     )
 
     # Cache layers: L1 = static rules (_CONCEPT_SYSTEM), L2 = slow-changing
@@ -1595,16 +2015,36 @@ async def generate_concepts(
         + ctx.context_text
     )
     system_blocks = _cached_system(_CONCEPT_SYSTEM, concept_l2)
+    market_block = _market_block(ctx.market_candidates, ctx.chain_name)
     user_msg = (
         f"THIS BATCH: propose exactly {n} concepts with difficulty mix: "
         f"{_tier_plan_text(n, tiers)}.\n"
         f"Avoid repeating these recent titles: {_fmt_list(list(recent_titles))}."
         + ctx.variety_block
-        + _market_block(ctx.market_deals, ctx.chain_name)
+        + market_block
         + _direction_block(ctx.direction, enumerated)
         + ctx.pin_block
         + f"\n\nPropose tonight's {n} dinner concepts now."
     )
+
+    # Prompt-context audit (Prompt 32 A2): one INFO line proves every context
+    # block survived the post-27 cache restructure; LOG_PROMPTS=1 dumps the
+    # fully-assembled prompt for a live generation.
+    logger.info(
+        "Stage 1 prompt assembled [model=%s]: L1=%d chars, L2=%d chars, "
+        "user=%d chars; blocks: taste_notes=%s loved_passed=%s recently_shown=%s "
+        "direction=%s pins=%s market_assignments=%s",
+        settings.recipe_model, len(_CONCEPT_SYSTEM), len(concept_l2), len(user_msg),
+        bool(ctx.taste_block), bool(ctx.history_block), bool(ctx.variety_block),
+        bool(ctx.direction), bool(ctx.pin_block), bool(market_block),
+    )
+    if settings.log_prompts:
+        logger.info(
+            "STAGE 1 FULL PROMPT\n=== L1 (static rules) ===\n%s\n"
+            "=== L2 (profile/taste/history/pantry/deals) ===\n%s\n"
+            "=== USER (per-press) ===\n%s",
+            _CONCEPT_SYSTEM, concept_l2, user_msg,
+        )
 
     client = AsyncAnthropic(api_key=settings.anthropic_api_key)
     with ai_metering.metering(category, user_id=user.id) as events:
@@ -1612,6 +2052,7 @@ async def generate_concepts(
             client, model=settings.recipe_model,
             max_tokens=max(_CONCEPT_MAX_TOKENS, 560 * n),
             system=system_blocks, user_msg=user_msg, category=category,
+            stage="concepts",
         )
         raw = [r for r in (data.get("recipes", []) if isinstance(data, dict) else [])
                if isinstance(r, dict)][:n]
@@ -1622,7 +2063,9 @@ async def generate_concepts(
         if raw:
             market_idx = [
                 i for i, c in enumerate(raw)
-                if _is_market_anchor(c.get("anchor_ingredient") or "", market_iids, pantry_iids)
+                if _match_candidate(
+                    c.get("anchor_ingredient") or "", ctx.market_candidates, pantry_iids
+                )
                 is not None
             ]
             raw, critics = await _critique_and_fix(
@@ -1634,13 +2077,24 @@ async def generate_concepts(
             # Variety guard: never re-serve a recent signature under a new name,
             # and keep the batch mutually distinct (each concept differs from
             # EVERY other on 2+ axes). Runs even with no history.
-            raw = await _enforce_variety(client, raw, recent_sigs, system_blocks, user_msg)
+            raw = await _enforce_variety(
+                client, raw, recent_sigs, system_blocks, user_msg,
+                market_pool_exhausted=pool_exhausted,
+            )
             # Slot-contract CAP backstop (Prompt 30): deterministic, has the final
             # say — the critic is unreliable at counting caps across the batch.
             if enumerated:
                 raw = await _enforce_slot_contract(
                     client, raw, requested_terms, ask_count, system_blocks, user_msg
                 )
+            # Within-batch market anchor diversity (P32 B3): no two market picks
+            # on the same anchor while unused candidates remain.
+            raw = await _enforce_market_diversity(
+                client, raw, ctx.market_candidates, pantry_iids,
+                system_blocks, user_msg,
+            )
+            # Title diversity (P32 D9): no signature word in 3+ titles.
+            raw = await _enforce_title_diversity(client, raw)
 
     persisted: list[Recipe] = []
     for r, critic in zip(raw, critics):
@@ -1653,23 +2107,29 @@ async def generate_concepts(
         # Market pick when the concept's anchor matches a designated deal the
         # user doesn't own (source of truth: OUR deal cache, not the model flag).
         anchor_name = r.get("anchor_ingredient") or ""
-        m_iid = _is_market_anchor(anchor_name, market_iids, pantry_iids)
+        cand = _match_candidate(anchor_name, ctx.market_candidates, pantry_iids)
         market_anchor = None
-        if m_iid is not None:
-            deal = next(
-                (d for d in ctx.market_deals if d.matched_ingredient_id == m_iid), None
-            )
-            if deal is not None:
-                market_anchor = {
-                    "name": anchor_name or deal.product_name,
-                    "ingredient_id": m_iid,
-                    "sale_price": str(deal.sale_price),
-                    "price_unit": deal.price_unit,
-                    "savings_pct": (
-                        float(deal.savings_pct) if deal.savings_pct is not None else None
-                    ),
-                    "store": ctx.chain_name,
-                }
+        if cand is not None:
+            deal = cand.deal
+            market_anchor = {
+                "name": anchor_name or cand.clean_name or deal.product_name,
+                "ingredient_id": cand.iid,
+                "anchor_key": cand.key,
+                "sale_price": str(deal.sale_price),
+                "price_unit": deal.price_unit,
+                "savings_pct": (
+                    float(deal.savings_pct) if deal.savings_pct is not None else None
+                ),
+                "store": cand.store or ctx.chain_name,
+                "cross_store": cand.cross_store,
+            }
+        # Provisional honesty flags on the CONCEPT's claimed macros (P32 C6/C7):
+        # never render a sub-floor or heavy number unannotated, even before the
+        # detail stage recomputes with USDA figures (which overwrites these).
+        flags = _quality_flags(
+            _protein_of(r), _calories_of(r.get("nutrition_per_serving")),
+            ctx.protein_floor, ctx.calorie_cap, ctx.calorie_target,
+        )
         recipe = Recipe(
             user_id=user.id,
             status="concept",
@@ -1697,6 +2157,7 @@ async def generate_concepts(
             },
             is_market_pick=market_anchor is not None,
             market_anchor_json=market_anchor,
+            quality_flags_json=flags,
             ai_model=settings.recipe_model,
         )
         db.add(recipe)
@@ -1758,12 +2219,15 @@ async def _call_json(
     system: str | list[dict],
     user_msg: str,
     category: str | None = None,
+    stage: str | None = None,
 ) -> dict:
     """Claude call returning parsed JSON, retrying once on a parse failure.
 
     ``system`` may be a plain string or a list of content blocks (from
     ``_cached_system``) for prompt caching. Every call's token usage + cost is
-    recorded into the active metering scope, tagged ``category``.
+    recorded into the active metering scope, tagged ``category`` and pipeline
+    ``stage`` (concepts / critic / concept_fix / details / detail_fix) so the
+    ledger can attribute the model that served each stage (Prompt 32 A1).
     """
     for _ in range(2):
         message = await client.messages.create(
@@ -1772,7 +2236,7 @@ async def _call_json(
             system=system,
             messages=[{"role": "user", "content": user_msg}],
         )
-        ai_metering.record_usage(model, message.usage, category=category)
+        ai_metering.record_usage(model, message.usage, category=category, stage=stage)
         text = "".join(b.text for b in message.content if b.type == "text")
         try:
             data = _extract_json(text)
@@ -1791,6 +2255,71 @@ def _protein_of(data: dict) -> float | None:
         return float(n.get("protein_g"))
     except (TypeError, ValueError):
         return None
+
+
+def _calories_of(nut: dict | None) -> float | None:
+    if not isinstance(nut, dict):
+        return None
+    try:
+        return float(nut.get("calories"))
+    except (TypeError, ValueError):
+        return None
+
+
+def _quality_flags(
+    protein: float | None,
+    calories: float | None,
+    floor: int,
+    cap: int,
+    daily_target: int,
+) -> dict | None:
+    """Honesty flags (Prompt 32 C6/C7). A recipe below the protein floor or
+    above the calorie band may ship ONLY carrying these — the frontend renders
+    them as amber chips on card and detail. None = clean."""
+    flags: dict = {}
+    if floor > 0 and protein is not None and protein < floor:
+        flags["protein_below_floor"] = {
+            "protein_g": round(protein), "floor_g": floor,
+        }
+    if cap > 0 and calories is not None and calories > cap:
+        flags["heavy"] = {
+            "calories": round(calories), "cap": cap, "daily_target": daily_target,
+        }
+    return flags or None
+
+
+def _fortify_correction(protein: float, floor: int, src: str) -> str:
+    """Fortification with teeth (P32 C5): name protein-dense options WITH MASS
+    and permit anchor replacement when the anchor can't carry the floor."""
+    return (
+        f"\n\nCORRECTION — PROTEIN FLOOR: this recipe delivers only {protein:.0f} g "
+        f"protein per serving ({src}), below the required {floor} g floor. Fix it "
+        "with MASS, not adjectives:\n"
+        "- Add or substantially increase a protein-dense ingredient with a real "
+        "per-serving quantity: 6-8 oz chicken breast or thighs, 6 oz fish or "
+        "shrimp, 1 cup Greek yogurt (~23 g), 1 cup cottage cheese (~25 g), 7 oz "
+        "firm tofu (~20 g), or a legume + grain pairing (1 cup cooked lentils "
+        "with rice, ~20 g). Pantry proteins first, then on-sale proteins.\n"
+        "- ANCHOR REPLACEMENT IS PERMITTED: if the dish's anchor is protein-"
+        "incapable (cauliflower cannot reach the floor by seasoning harder), "
+        "replace it or pair it with a protein co-anchor, and include a "
+        '"revised_title" field in the JSON reflecting the honest new dish.\n'
+        "- Do NOT merely restate higher numbers; the ingredient amounts must "
+        "actually change."
+    )
+
+
+def _rebalance_correction(calories: float, cap: int, target: int) -> str:
+    """Calorie band (P32 C7): one portion-rebalance regeneration for a serving
+    above 55% of the daily calorie target."""
+    return (
+        f"\n\nCORRECTION — CALORIE BAND: a serving computes to {calories:.0f} "
+        f"calories, more than {int(_CAL_BAND * 100)}% of the diner's {target}-"
+        f"calorie day (limit {cap}). Rebalance the PORTION: raise the number of "
+        "servings the same totals yield, or trim the calorie-dense components "
+        "(oil, cheese, fried elements, oversized starch) — while keeping protein "
+        "per serving at or above the floor. Do NOT just relabel the numbers."
+    )
 
 
 def _model_nutrition(data: dict) -> dict | None:
@@ -1868,6 +2397,7 @@ async def _fill_details(
     """
     client = AsyncAnthropic(api_key=settings.anthropic_api_key)
     floor = ctx.protein_floor
+    cap = ctx.calorie_cap
     detail_l2 = _protein_block(floor) + ctx.pin_block + "\n\n" + ctx.context_text
     detail_system = _cached_system(_DETAIL_SYSTEM, detail_l2)
     msgs = [_detail_user_msg(r, ctx) for r in recipes]
@@ -1875,7 +2405,7 @@ async def _fill_details(
         *(
             _call_json(
                 client, model=settings.detail_model, max_tokens=_DETAIL_MAX_TOKENS,
-                system=detail_system, user_msg=m, category=category,
+                system=detail_system, user_msg=m, category=category, stage="details",
             )
             for m in msgs
         ),
@@ -1886,39 +2416,53 @@ async def _fill_details(
         data = res if isinstance(res, dict) else {}
         ingredients, model_nut, computed = _reconcile_and_compute(data, recipe, ctx)
         final_nut, protein = _effective_nutrition(model_nut, computed)
+        calories = _calories_of(final_nut)
 
-        # Protein-floor validation on the AUTHORITATIVE figure — the computed
-        # (USDA) protein when coverage is high enough, else the model's estimate.
-        # One corrective regeneration if short; the retry only wins if it beats
-        # the current authoritative protein (never adopt a worse version).
-        if floor > 0 and protein is not None and protein < floor:
+        # Floor + calorie-band validation on the AUTHORITATIVE figures — the
+        # computed (USDA) numbers when coverage is high enough, else the model's
+        # estimate. One corrective regeneration; the retry only wins if it
+        # doesn't worsen any violated dimension (never adopt a worse version).
+        viol_protein = floor > 0 and protein is not None and protein < floor
+        viol_cal = cap > 0 and calories is not None and calories > cap
+        if viol_protein or viol_cal:
             src = (final_nut or {}).get("source", "est")
-            correction = (
-                f"\n\nCORRECTION: this recipe delivers only {protein:.0f} g protein "
-                f"per serving ({src}), below the required {floor} g floor. Increase the "
-                "main protein quantity or add a protein source (pantry proteins first, "
-                "then on-sale) — do NOT merely restate a higher number; the amounts "
-                "must actually change."
-            )
+            correction = ""
+            if viol_protein:
+                correction += _fortify_correction(protein, floor, src)
+            if viol_cal:
+                correction += _rebalance_correction(calories, cap, ctx.calorie_target)
             retry = await _call_json(
                 client, model=settings.detail_model, max_tokens=_DETAIL_MAX_TOKENS,
-                system=detail_system, user_msg=msgs[i] + correction, category=category,
+                system=detail_system, user_msg=msgs[i] + correction,
+                category=category, stage="detail_fix",
             )
             if isinstance(retry, dict) and retry:
                 r_ings, r_model, r_comp = _reconcile_and_compute(retry, recipe, ctx)
                 r_final, r_protein = _effective_nutrition(r_model, r_comp)
-                if r_protein is not None and r_protein >= protein:
-                    data, ingredients, final_nut, protein = (
-                        retry, r_ings, r_final, r_protein
-                    )
-            if protein is None or protein < floor:
-                logger.warning(
-                    "Recipe %s (%r) protein %sg still below floor %dg after correction "
-                    "(nutrition source: %s)",
-                    recipe.id, recipe.title,
-                    "unknown" if protein is None else f"{protein:.0f}", floor,
-                    (final_nut or {}).get("source", "?"),
-                )
+                r_cal = _calories_of(r_final)
+                better = True
+                if viol_protein and (r_protein is None or r_protein < protein):
+                    better = False
+                if viol_cal and (r_cal is None or r_cal > calories):
+                    better = False
+                if better:
+                    data, ingredients, final_nut = retry, r_ings, r_final
+                    protein, calories = r_protein, r_cal
+                    # Anchor replacement (P32 C5) may honestly rename the dish.
+                    new_title = str(retry.get("revised_title") or "").strip()
+                    if new_title:
+                        recipe.title = new_title[:255]
+
+        # Honesty flags (P32 C6/C7): a recipe that still lands below the floor
+        # or above the calorie band ships ONLY with a visible amber chip.
+        flags = _quality_flags(protein, calories, floor, cap, ctx.calorie_target)
+        recipe.quality_flags_json = flags
+        if flags:
+            logger.warning(
+                "Recipe %s (%r) ships flagged after correction: %s "
+                "(nutrition source: %s)",
+                recipe.id, recipe.title, flags, (final_nut or {}).get("source", "?"),
+            )
 
         recipe.ingredients_json = ingredients
         instructions = data.get("instructions") if isinstance(data, dict) else None

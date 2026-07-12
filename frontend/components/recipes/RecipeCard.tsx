@@ -6,6 +6,7 @@ import {
   DifficultyPill,
   MarketPickBadge,
   PantryLine,
+  QualityChips,
   marketAnchorLine,
   metaLine,
   nutritionLine,
@@ -34,6 +35,7 @@ export default function RecipeCard({
           <div className="flex flex-wrap items-center gap-2">
             <DifficultyPill difficulty={recipe.difficulty} />
             {recipe.is_market_pick && <MarketPickBadge />}
+            <QualityChips recipe={recipe} />
           </div>
           <h3 className="mt-2 text-lg font-bold leading-snug text-ink">{recipe.title}</h3>
         </div>

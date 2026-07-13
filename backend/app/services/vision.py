@@ -884,7 +884,11 @@ class CircularExtractor:
                     )
                 chain.platform = platform
                 chain.platform_evidence = evidence[:2000]
-                if url and not chain.source_url:
+                # A freshly-resolved weekly-ad URL beats a stale recorded one
+                # (H Mart's recorded /weeklyad 404s; discovery finds the live
+                # /weekly-ads) — this chain is pending, so nothing depends on
+                # the old value.
+                if url:
                     chain.source_url = url
                 if chain.source_type in (None, "", "chain_site"):
                     strategy = circular_probe.STRATEGY_FOR_PLATFORM.get(platform)

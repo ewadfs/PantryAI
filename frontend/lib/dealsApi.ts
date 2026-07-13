@@ -28,7 +28,32 @@ export type DealsStateResponse = {
   state: DealsState;
   chain_name: string | null;
   region_key: string | null;
+  // Whether the circular viewer feature is exposed (gates entry links).
+  circular_viewer: boolean;
 };
+
+export type CircularPage = {
+  page_number: number;
+  image_url: string;
+  deals: Deal[];
+};
+
+export type CircularResponse = {
+  state: "ready" | "no_images" | "expired" | "no_store";
+  chain_name: string | null;
+  chain_slug: string | null;
+  store_name: string | null;
+  valid_from: string | null;
+  valid_to: string | null;
+  refresh_day: string | null;
+  pages: CircularPage[];
+  deals: Deal[];
+};
+
+export const getCircular = (chain?: string) =>
+  apiFetch<CircularResponse>(
+    `/api/v1/deals/circular${chain ? `?chain=${encodeURIComponent(chain)}` : ""}`,
+  );
 
 export const getDealsState = () =>
   apiFetch<DealsStateResponse>("/api/v1/deals/state");

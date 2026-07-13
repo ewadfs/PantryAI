@@ -3,6 +3,7 @@
 import { forwardRef, useEffect, useState, type RefObject } from "react";
 import type { Difficulty } from "@/lib/recipeApi";
 import type { PantryItem } from "@/lib/types";
+import StoreChip from "@/components/stores/StoreChip";
 import UseUpRow, { type Pin } from "./UseUpRow";
 
 const TIERS: { key: Difficulty; label: string }[] = [
@@ -39,7 +40,7 @@ const SetupPanel = forwardRef<HTMLDivElement, {
   pins: Pin[];
   pantryItems: PantryItem[];
   onAddPin: (p: Pin) => void;
-  onRemovePin: (id: number) => void;
+  onRemovePin: (id: number, kind?: "pantry" | "deal") => void;
   difficulties: Difficulty[];
   onToggleDifficulty: (d: Difficulty) => void;
   direction: string;
@@ -83,16 +84,10 @@ const SetupPanel = forwardRef<HTMLDivElement, {
       ref={ref}
       className="rounded-2xl border border-hairline bg-surface p-4 shadow-sm"
     >
-      {/* store chip */}
+      {/* store chip (shared with the Home deals card, P37 A) */}
       {storeName && (
         <div className="mb-3 flex justify-end">
-          <button
-            onClick={onOpenStore}
-            className="flex shrink-0 items-center gap-1 rounded-full border border-hairline bg-canvas px-3 py-1.5 text-sm font-medium text-ink active:scale-[.98]"
-          >
-            📍 <span className="max-w-[10rem] truncate">{storeName}</span>
-            <span className="text-ink-faint">▾</span>
-          </button>
+          <StoreChip storeName={storeName} onOpen={onOpenStore} />
         </div>
       )}
 

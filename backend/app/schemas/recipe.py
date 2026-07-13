@@ -4,7 +4,7 @@ from datetime import date, datetime
 from decimal import Decimal
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 class RecipeIngredient(BaseModel):
@@ -80,6 +80,9 @@ class MarketAnchor(BaseModel):
     # True when the anchor comes from a saved store other than the batch's
     # default — the sparse-store fallback (Prompt 32 #4); the UI labels it.
     cross_store: bool = False
+    # True when the user explicitly pinned this deal ("Cook with this sale",
+    # P37 C) — the UI labels it "your pick".
+    user_pin: bool = False
 
 
 class ProteinBelowFloorFlag(BaseModel):
@@ -138,6 +141,9 @@ class GenerateRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     pinned_pantry_item_ids: list[int] = Field(default_factory=list, max_length=3)
+    # Deals pinned as designated market anchors ("Cook with this sale", P37 C).
+    # Validated downstream: current-valid deals from the user's saved stores.
+    pinned_deal_ids: list[int] = Field(default_factory=list, max_length=3)
     # Ephemeral, per-batch steer ("grill something", "use the wok"). Applies only
     # to the batch it's typed for; does not carry into the next generation.
     direction: str | None = Field(default=None, max_length=200)
@@ -150,6 +156,12 @@ class GenerateRequest(BaseModel):
         order = {"easy": 0, "medium": 1, "hard": 2}
         seen = {d for d in v if d in order}
         return sorted(seen, key=lambda d: order[d])
+
+    @model_validator(mode="after")
+    def _combined_pin_cap(self) -> "GenerateRequest":
+        if len(self.pinned_pantry_item_ids) + len(self.pinned_deal_ids) > 3:
+            raise ValueError("Pin up to 3 things total (pantry items + deals).")
+        return self
 
 
 class GenerateResponse(BaseModel):

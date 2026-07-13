@@ -3,25 +3,32 @@
 Single-store mode: a user sees only the deals for their *default* store's chain.
 """
 
+import logging
 from datetime import date
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import func, nulls_last, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import settings
 from app.database import get_db
 from app.models.deal import CircularFetch, DealCache
 from app.models.store import StoreLocation, SupportedChain, UserStore
 from app.models.user import User
 from app.schemas.deal import (
+    CircularPage,
+    CircularResponse,
     DealListResponse,
     DealRead,
     DealsStateResponse,
     RefreshRequest,
     RefreshResponse,
 )
+from app.services import storage
 from app.services.auth import get_current_user
 from app.services.vision import CircularExtractor
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/deals", tags=["deals"])
 
@@ -150,7 +157,130 @@ async def deals_state(
         chain = await db.get(SupportedChain, chain_id)
         chain_name = chain.chain_name if chain else None
     return DealsStateResponse(
-        state=state, chain_name=chain_name, region_key=region_key
+        state=state, chain_name=chain_name, region_key=region_key,
+        circular_viewer=settings.expose_circular_viewer,
+    )
+
+
+# --------------------------------------------------------------------------- #
+# Circular viewer (Prompt 37 B)
+# --------------------------------------------------------------------------- #
+_PRESIGN_TTL_SECONDS = 600  # 10 minutes, matching the P20 crop URLs
+
+
+@router.get("/circular", response_model=CircularResponse)
+async def circular(
+    chain: str | None = Query(default=None, description="chain_slug of one of "
+                              "the user's saved stores; default store if omitted"),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> CircularResponse:
+    """The current flyer for one of the user's saved stores: swipeable page
+    images (short-lived presigned URLs) with each page's extracted deals.
+    Structured-source chains (no page images) fall back to the grouped deal
+    list; an expired/missing fetch reports when the new circular lands."""
+    if not settings.expose_circular_viewer:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Circular viewer is not enabled.",
+        )
+    # Resolve the requested store among the user's SAVED stores only.
+    rows = (
+        await db.execute(
+            select(
+                UserStore.is_default,
+                StoreLocation.chain_id,
+                StoreLocation.store_name,
+                StoreLocation.region_key,
+                SupportedChain.chain_name,
+                SupportedChain.chain_slug,
+                SupportedChain.circular_refresh_day,
+            )
+            .join(StoreLocation, StoreLocation.id == UserStore.store_location_id)
+            .join(SupportedChain, SupportedChain.id == StoreLocation.chain_id)
+            .where(UserStore.user_id == current_user.id)
+        )
+    ).all()
+    if not rows:
+        return CircularResponse(state="no_store")
+    row = None
+    if chain:
+        row = next((r for r in rows if r.chain_slug == chain), None)
+        if row is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="That store isn't in your saved stores.",
+            )
+    else:
+        row = next((r for r in rows if r.is_default), rows[0])
+
+    today = date.today()
+    fetch_scope = (
+        CircularFetch.region_key == row.region_key
+        if row.region_key is not None
+        else CircularFetch.chain_id == row.chain_id
+    )
+    fetch = (
+        await db.execute(
+            select(CircularFetch)
+            .where(
+                fetch_scope,
+                CircularFetch.status.in_(["success", "partial"]),
+                CircularFetch.valid_to >= today,
+            )
+            .order_by(CircularFetch.fetched_at.desc())
+            .limit(1)
+        )
+    ).scalars().first()
+
+    base = dict(
+        chain_name=row.chain_name, chain_slug=row.chain_slug,
+        store_name=row.store_name, refresh_day=row.circular_refresh_day,
+    )
+    if fetch is None:
+        return CircularResponse(state="expired", **base)
+
+    deal_rows = (
+        (
+            await db.execute(
+                select(DealCache)
+                .where(DealCache.fetch_id == fetch.id)
+                .order_by(
+                    DealCache.page_number,
+                    nulls_last(DealCache.savings_pct.desc()),
+                    DealCache.id,
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    all_deals = [DealRead.model_validate(d) for d in deal_rows]
+
+    pages: list[CircularPage] = []
+    for n, key in enumerate(fetch.image_keys or [], start=1):
+        try:
+            url = await storage.presign_get(key, _PRESIGN_TTL_SECONDS)
+        except Exception:  # noqa: BLE001 — storage misconfig → list fallback
+            logger.exception("Presign failed for circular page %s", key)
+            pages = []
+            break
+        pages.append(CircularPage(
+            page_number=n,
+            image_url=url,
+            deals=[d for d in all_deals if d.page_number == n],
+        ))
+
+    if not pages:
+        # Structured-source chain (no page images) or unreadable storage:
+        # the grouped deal list stands in for the flyer.
+        return CircularResponse(
+            state="no_images", valid_from=fetch.valid_from,
+            valid_to=fetch.valid_to, deals=all_deals, **base,
+        )
+    return CircularResponse(
+        state="ready", valid_from=fetch.valid_from, valid_to=fetch.valid_to,
+        pages=pages, **base,
     )
 
 

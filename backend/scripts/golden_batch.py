@@ -316,6 +316,13 @@ class _StubMessages:
         return m.group(1).strip() if m else None
 
     @staticmethod
+    def _deal_pin_names(text: str) -> list:
+        m = re.search(r"explicitly chose to buy (.+?)\.", text)
+        if not m:
+            return []
+        return [n.strip() for n in m.group(1).split(",") if n.strip()]
+
+    @staticmethod
     def _veg_for(anchor: str) -> str:
         """Distinct supporting veg per anchor so market concepts don't clone
         each other's sides (the live model varies these; the stub must too)."""
@@ -338,7 +345,8 @@ class _StubMessages:
     def _concepts(self, user: str) -> dict:
         n = int(re.search(r"propose exactly (\d+) concepts", user).group(1))
         picks = re.findall(
-            r"- MARKET PICK \d+: build around (.+?): \$([0-9.]+)(?:/(\w+))?"
+            r"- MARKET PICK \d+(?:\s*\[[^\]]*\])?: build around (.+?): "
+            r"\$([0-9.]+)(?:/(\w+))?"
             r"(?:,[^\n—\[]*)?\s*((?:—\s*at\s+[^\n\[]+)?)", user,
         )
         tiers = []
@@ -347,12 +355,21 @@ class _StubMessages:
             tiers += [tier] * int(count)
         tiers = (tiers + ["medium"] * n)[:n]
         pin = self._pin_name(user)
+        deal_pin_names = self._deal_pin_names(user)
 
         def with_pin(keys: list[dict]) -> list[dict]:
             if pin:
                 keys = keys + [{"generic_name": pin, "brand": None,
                                 "in_pantry": True, "on_sale": False,
                                 "sale_price": None}]
+            for dp in deal_pin_names:
+                clean = ingredient_matcher.normalize_flyer_name(dp) or dp
+                if not any(clean.lower() in str(k.get("generic_name") or "").lower()
+                           or str(k.get("generic_name") or "").lower() in clean.lower()
+                           for k in keys):
+                    keys = keys + [{"generic_name": clean.lower(), "brand": None,
+                                    "in_pantry": False, "on_sale": True,
+                                    "sale_price": None}]
             return keys
 
         # Pantry concepts fill only the NON-market slots; the perishable slot
@@ -1448,6 +1465,58 @@ async def mini_checks() -> None:
         beef.is_active = True
         beef.freshness = "good"
         await db.commit()
+
+        # (d) DEAL PIN ("Cook with this sale", P37 C): pin the Lidl chicken
+        # breast deal + a pantry pin — combined pins, every recipe features
+        # the deal, one concept anchors it, priced + "your pick" labeled.
+        chicken_deal = (
+            await db.execute(
+                select(DealCache).where(
+                    DealCache.region_key == STORES["lidl"][2],
+                    DealCache.product_name.ilike("%Chicken Breast%"),
+                )
+            )
+        ).scalars().first()
+        tomato_pin = (
+            await db.execute(
+                select(PantryItem).where(PantryItem.user_id == user.id,
+                                         PantryItem.name == "cherry tomatoes")
+            )
+        ).scalar_one()
+        concepts = await recipe_engine.generate_concepts(
+            db, user, pinned_ids=[tomato_pin.id],
+            pinned_deal_ids=[chicken_deal.id],
+        )
+        await db.commit()
+        anchored = [
+            r for r in concepts
+            if (r.market_anchor_json or {}).get("user_pin")
+        ]
+        featured = sum(
+            1 for r in concepts
+            if any("chicken breast" in str(k.get("generic_name") or "").lower()
+                   for k in (r.key_ingredients_json or []))
+            or "chicken breast" in str(
+                (r.signature_json or {}).get("anchor_ingredient") or ""
+            ).lower()
+        )
+        labels = [
+            p for p in (concepts[0].pinned_items_json or []) if p.get("deal")
+        ]
+        print(f"deal pin @ N=5 (pinned: '{chicken_deal.product_name}' + pantry "
+              f"'cherry tomatoes'):")
+        if anchored:
+            a = anchored[0].market_anchor_json
+            print(f"  anchoring concept: '{anchored[0].title}' — badge=True, "
+                  f"built around {a.get('name')} ${a.get('sale_price')}"
+                  f"{'/' + a['price_unit'] if a.get('price_unit') else ''} "
+                  f"(user_pin={a.get('user_pin')})")
+        else:
+            print("  anchoring concept: MISSING!")
+        print(f"  featured in {featured}/{len(concepts)} recipes; "
+              f"batch chip: {labels[0]['name']} ${labels[0]['sale_price']}"
+              f"/{labels[0]['price_unit']} — your pick" if labels else
+              "  batch chip: MISSING")
 
         # (c) DEALS STARVATION -> anchor cap (the live all-beef regression).
         # Wipe every golden flyer AND the fetch history (so the self-heal

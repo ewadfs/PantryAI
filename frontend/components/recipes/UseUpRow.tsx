@@ -3,7 +3,15 @@
 import { useMemo, useState } from "react";
 import type { PantryItem } from "@/lib/types";
 
-export type Pin = { id: number; name: string };
+/** A generation pin: a pantry item (🏠) or a pinned DEAL — the user's
+ * explicit "cook with this sale" purchase (🏷️, priced). */
+export type Pin = {
+  id: number;
+  name: string;
+  kind?: "pantry" | "deal";
+  price?: string | null;
+  priceUnit?: string | null;
+};
 const MAX_PINS = 3;
 
 export default function UseUpRow({
@@ -15,7 +23,7 @@ export default function UseUpRow({
   pins: Pin[];
   pantryItems: PantryItem[];
   onAdd: (pin: Pin) => void;
-  onRemove: (id: number) => void;
+  onRemove: (id: number, kind?: "pantry" | "deal") => void;
 }) {
   const [picking, setPicking] = useState(false);
   const atMax = pins.length >= MAX_PINS;
@@ -28,17 +36,35 @@ export default function UseUpRow({
       </p>
 
       <div className="mt-3 flex flex-wrap items-center gap-2">
-        {pins.map((p) => (
-          <span
-            key={p.id}
-            className="flex items-center gap-1.5 rounded-full bg-brand-soft px-3 py-1.5 text-sm font-medium text-brand-dark"
-          >
-            {p.name}
-            <button aria-label={`Unpin ${p.name}`} onClick={() => onRemove(p.id)} className="text-brand-dark/70">
-              ✕
-            </button>
-          </span>
-        ))}
+        {pins.map((p) =>
+          p.kind === "deal" ? (
+            <span
+              key={`d${p.id}`}
+              className="flex items-center gap-1.5 rounded-full border border-warn/40 bg-warn-soft px-3 py-1.5 text-sm font-medium text-warn"
+            >
+              🏷️ {p.name}
+              {p.price && (
+                <span className="font-semibold">
+                  ${Number(p.price).toFixed(2)}
+                  {p.priceUnit ? `/${p.priceUnit}` : ""}
+                </span>
+              )}
+              <button aria-label={`Unpin ${p.name}`} onClick={() => onRemove(p.id, "deal")} className="text-warn/70">
+                ✕
+              </button>
+            </span>
+          ) : (
+            <span
+              key={p.id}
+              className="flex items-center gap-1.5 rounded-full bg-brand-soft px-3 py-1.5 text-sm font-medium text-brand-dark"
+            >
+              🏠 {p.name}
+              <button aria-label={`Unpin ${p.name}`} onClick={() => onRemove(p.id, "pantry")} className="text-brand-dark/70">
+                ✕
+              </button>
+            </span>
+          ),
+        )}
         {!atMax && (
           <button
             onClick={() => setPicking(true)}
@@ -51,7 +77,7 @@ export default function UseUpRow({
 
       {picking && (
         <PantryPicker
-          items={pantryItems.filter((i) => !pins.some((p) => p.id === i.id))}
+          items={pantryItems.filter((i) => !pins.some((p) => p.kind !== "deal" && p.id === i.id))}
           onPick={(item) => {
             onAdd({ id: item.id, name: item.name ?? "item" });
             setPicking(false);

@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useToast } from "@/components/ui/Toast";
-import { getDeals, type Deal, type DealsState } from "@/lib/dealsApi";
+import { getDeals, getDealsState, type Deal, type DealsState } from "@/lib/dealsApi";
 import { CATEGORIES, categoryLabel } from "@/lib/categories";
 
 const PER_PAGE = 20;
@@ -25,7 +25,14 @@ export default function DealsPage() {
   const [page, setPage] = useState(1);
   const [loading, setLoading] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
+  const [circularOn, setCircularOn] = useState(false);
   const reqId = useRef(0);
+
+  useEffect(() => {
+    getDealsState()
+      .then((st) => setCircularOn(st.circular_viewer))
+      .catch(() => setCircularOn(false));
+  }, []);
 
   // debounce the search box
   useEffect(() => {
@@ -74,7 +81,15 @@ export default function DealsPage() {
         <Link href="/" aria-label="Back" className="text-xl text-ink-soft">
           ‹
         </Link>
-        <h1 className="text-2xl font-bold text-ink">Deals</h1>
+        <h1 className="flex-1 text-2xl font-bold text-ink">Deals</h1>
+        {circularOn && (
+          <Link
+            href="/circular/default"
+            className="shrink-0 text-sm font-semibold text-brand-dark"
+          >
+            📰 View circular →
+          </Link>
+        )}
       </header>
 
       <input
@@ -143,6 +158,13 @@ export default function DealsPage() {
                     {num(d.savings_pct).toFixed(0)}% off
                   </span>
                 )}
+                <Link
+                  href={`/recipes?pinDeal=${d.id}&dealName=${encodeURIComponent(d.product_name)}&dealPrice=${encodeURIComponent(String(d.sale_price))}${d.price_unit ? `&dealUnit=${encodeURIComponent(d.price_unit)}` : ""}`}
+                  aria-label={`Cook with ${d.product_name}`}
+                  className="shrink-0 rounded-full bg-warn-soft px-2 py-1 text-[11px] font-semibold text-warn active:scale-95"
+                >
+                  🍳
+                </Link>
               </li>
             ))}
           </ul>

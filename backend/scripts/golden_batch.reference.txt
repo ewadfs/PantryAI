@@ -167,6 +167,9 @@ use_soon @ N=3: batch = 3 concepts (2 market picks); beef-anchored non-market: 1
   #1 Seared Beef & Green Beans Stir-Fry
   why leads with urgency: YES -> "Your ground beef should be used in the next day or two. A fast wok dinner from your kitche"
 beef consumed @ N=5: batch = 5 concepts (5 market picks); FORCED beef slot: 0 (guarantee inactive — nothing perishable left to protect). Beef market picks: 1 — the flyer's beef deal is fair game again once the owned beef is gone.
+deal pin @ N=5 (pinned: 'Fresh Boneless Skinless Chicken Breast Family Pack' + pantry 'cherry tomatoes'):
+  anchoring concept: 'Chicken Breast Casserole Night' — badge=True, built around chicken breast $1.99/lb (user_pin=True)
+  featured in 5/5 recipes; batch chip: Chicken Breast $1.99/lb — your pick
 deals starved @ N=5 (flyers wiped; stub proposes the live ALL-BEEF batch — 5× ground beef, formats/cuisines rotated):
   anchors shipped: ['ground beef', 'rigatoni', 'canned black beans', 'baby potatoes', 'broccoli']
   beef-anchored: 1 (one anchor, one dish); anchors distinct: YES; market picks: 0

@@ -62,3 +62,35 @@ class DealsStateResponse(BaseModel):
     state: str = "no_store"
     chain_name: str | None = None
     region_key: str | None = None
+    # Whether the circular viewer feature is exposed (P37 B5 flag) — gates the
+    # "View circular" entry points client-side.
+    circular_viewer: bool = False
+
+
+class CircularPage(BaseModel):
+    """One flyer page: a short-lived presigned image URL + the deals our
+    extractor read off exactly that page."""
+
+    page_number: int
+    image_url: str
+    deals: list[DealRead]
+
+
+class CircularResponse(BaseModel):
+    """The current circular for one of the user's saved stores (P37 B).
+
+    state: 'ready' (pages render) | 'no_images' (structured-source chain or
+    unreadable storage — grouped deal list shows instead) | 'expired' (no
+    valid fetch — show when the new one lands) | 'no_store'.
+    """
+
+    state: str
+    chain_name: str | None = None
+    chain_slug: str | None = None
+    store_name: str | None = None
+    valid_from: date | None = None
+    valid_to: date | None = None
+    refresh_day: str | None = None
+    pages: list[CircularPage] = Field(default_factory=list)
+    # no_images fallback: every current deal, for a grouped list view.
+    deals: list[DealRead] = Field(default_factory=list)

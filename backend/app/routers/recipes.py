@@ -61,11 +61,13 @@ async def generate(
     (up to 3) pantry items.
     """
     pinned = payload.pinned_pantry_item_ids if payload else []
+    pinned_deals = payload.pinned_deal_ids if payload else []
     direction = payload.direction if payload else None
     difficulties = payload.difficulties if payload else []
     try:
         recipes = await recipe_engine.generate_concepts(
-            db, current_user, pinned, direction, difficulties
+            db, current_user, pinned, direction, difficulties,
+            pinned_deal_ids=pinned_deals,
         )
     except ValueError as e:
         # User-facing validation error (e.g. bad pinned ids) — keep the 400.
@@ -145,11 +147,18 @@ async def latest(
         .all()
     )
     store_name = rows[0].generated_store_name if rows else None
-    pinned = [
-        p.get("name")
-        for p in (rows[0].pinned_items_json or [])
-        if isinstance(p, dict) and p.get("name")
-    ] if rows else []
+    # Batch chip labels: deal pins render priced + attributed ("salmon $8.99 —
+    # your pick", P37 C9); pantry pins stay bare names.
+    pinned = []
+    for p in (rows[0].pinned_items_json or []) if rows else []:
+        if not (isinstance(p, dict) and p.get("name")):
+            continue
+        if p.get("deal"):
+            price = f" ${p['sale_price']}" if p.get("sale_price") else ""
+            unit = f"/{p['price_unit']}" if p.get("price_unit") else ""
+            pinned.append(f"{p['name']}{price}{unit} — your pick")
+        else:
+            pinned.append(p.get("name"))
     direction = rows[0].direction if rows else None
     difficulties = (rows[0].difficulties or []) if rows else []
     return LatestResponse(

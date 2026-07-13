@@ -88,6 +88,11 @@ class Settings(BaseSettings):
     deals_refresh_enabled: bool = True
     deals_refresh_hours: int = 6
 
+    # Circular viewer (Prompt 37 B): flyer page images are the store's
+    # creative — this is the one feature to re-review before any beta, so
+    # exposing it is a toggle, not a code change.
+    expose_circular_viewer: bool = True
+
     # CORS — comma-separated *extra* origins, merged with _DEFAULT_CORS_ORIGINS.
     # A bare "*" is ignored because it cannot be combined with credentials.
     cors_origins: str = ""

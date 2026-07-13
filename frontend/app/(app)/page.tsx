@@ -3,8 +3,11 @@
 import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import { useToast } from "@/components/ui/Toast";
-import { getTopDeals, type Deal } from "@/lib/dealsApi";
-import { getMyStores } from "@/lib/storesApi";
+import { getDealsState, getTopDeals, type Deal } from "@/lib/dealsApi";
+import { getMyStores, setDefaultStore } from "@/lib/storesApi";
+import StoreChip from "@/components/stores/StoreChip";
+import StoreSheet from "@/components/recipes/StoreSheet";
+import type { UserStore } from "@/lib/listTypes";
 import { listPantry } from "@/lib/pantryApi";
 import { getWeek } from "@/lib/recipeApi";
 import { currentWeekStart } from "@/lib/week";
@@ -52,7 +55,10 @@ export default function HomePage() {
   const [me, setMe] = useState<UserProfile | null>(null);
   const [deals, setDeals] = useState<Deal[]>([]);
   const [pantry, setPantry] = useState<PantryListResponse | null>(null);
-  const [storeName, setStoreName] = useState<string | null>(null);
+  const [stores, setStores] = useState<UserStore[]>([]);
+  const [storeSheet, setStoreSheet] = useState(false);
+  const [switching, setSwitching] = useState(false);
+  const [circularOn, setCircularOn] = useState(false);
   const [week, setWeek] = useState<WeekResponse | null>(null);
   const [savings, setSavings] = useState<SavingsResponse | null>(null);
   const [lastScan, setLastScan] = useState<string | null>(null);
@@ -60,20 +66,23 @@ export default function HomePage() {
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const [meRes, dealsRes, pantryRes, storesRes, weekRes, savingsRes] = await Promise.all([
-        getMe().catch(() => null),
-        getTopDeals().catch(() => []),
-        listPantry().catch(() => null),
-        getMyStores().catch(() => []),
-        getWeek(currentWeekStart()).catch(() => null),
-        getSavings().catch(() => null),
-      ]);
+      const [meRes, dealsRes, pantryRes, storesRes, weekRes, savingsRes, stateRes] =
+        await Promise.all([
+          getMe().catch(() => null),
+          getTopDeals().catch(() => []),
+          listPantry().catch(() => null),
+          getMyStores().catch(() => []),
+          getWeek(currentWeekStart()).catch(() => null),
+          getSavings().catch(() => null),
+          getDealsState().catch(() => null),
+        ]);
       setMe(meRes);
       setDeals(dealsRes);
       setPantry(pantryRes);
-      setStoreName((storesRes.find((s) => s.is_default) ?? storesRes[0])?.store?.store_name ?? null);
+      setStores(storesRes);
       setWeek(weekRes);
       setSavings(savingsRes);
+      setCircularOn(stateRes?.circular_viewer ?? false);
     } catch {
       toast.error("Couldn't load your home screen.", load);
     } finally {
@@ -87,6 +96,29 @@ export default function HomePage() {
   }, [load]);
 
   const name = firstName(me);
+  const currentStore = stores.find((s) => s.is_default) ?? stores[0] ?? null;
+  const storeName = currentStore?.store?.store_name ?? null;
+
+  async function onSelectStore(id: number) {
+    setSwitching(true);
+    try {
+      const updated = await setDefaultStore(id);
+      setStores(updated);
+      setStoreSheet(false);
+      // Deals follow the anchored store — refetch the card (P37 A; recipe
+      // regeneration stays manual per the P27 debounce rules).
+      const [fresh, st] = await Promise.all([
+        getTopDeals().catch(() => []),
+        getDealsState().catch(() => null),
+      ]);
+      setDeals(fresh);
+      if (st) setCircularOn(st.circular_viewer);
+    } catch {
+      toast.error("Could not switch stores.");
+    } finally {
+      setSwitching(false);
+    }
+  }
 
   if (loading) return <HomeSkeleton />;
 
@@ -110,13 +142,20 @@ export default function HomePage() {
         <Onboarding />
       ) : (
         <div className="flex flex-col gap-4">
-          {/* Deals */}
+          {/* Deals — header carries the SAME store chip as the Recipes setup
+              panel (P37 A): one component, two homes. */}
           <section className="rounded-2xl border border-hairline bg-surface p-5">
-            <div className="flex items-center justify-between">
-              <h2 className="text-base font-bold text-ink">
-                This week&apos;s deals{storeName ? ` at ${storeName}` : ""}
+            <div className="flex items-center justify-between gap-2">
+              <h2 className="flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-1 text-base font-bold text-ink">
+                <span className="shrink-0">This week&apos;s deals</span>
+                {storeName && (
+                  <>
+                    <span className="shrink-0 font-normal text-ink-soft">at</span>
+                    <StoreChip storeName={storeName} onOpen={() => setStoreSheet(true)} />
+                  </>
+                )}
               </h2>
-              <Link href="/deals" className="text-sm font-semibold text-brand-dark">
+              <Link href="/deals" className="shrink-0 text-sm font-semibold text-brand-dark">
                 See all
               </Link>
             </div>
@@ -137,9 +176,24 @@ export default function HomePage() {
                         {num(d.savings_pct).toFixed(0)}% off
                       </span>
                     )}
+                    <Link
+                      href={`/recipes?pinDeal=${d.id}&dealName=${encodeURIComponent(d.product_name)}&dealPrice=${encodeURIComponent(String(d.sale_price))}${d.price_unit ? `&dealUnit=${encodeURIComponent(d.price_unit)}` : ""}`}
+                      aria-label={`Cook with ${d.product_name}`}
+                      className="shrink-0 rounded-full bg-warn-soft px-2 py-1 text-[11px] font-semibold text-warn active:scale-95"
+                    >
+                      🍳 Cook with this
+                    </Link>
                   </li>
                 ))}
               </ul>
+            )}
+            {circularOn && (
+              <Link
+                href="/circular/default"
+                className="mt-3 inline-block text-sm font-semibold text-brand-dark"
+              >
+                📰 View circular →
+              </Link>
             )}
           </section>
 
@@ -202,6 +256,16 @@ export default function HomePage() {
             </Link>
           </section>
         </div>
+      )}
+
+      {storeSheet && (
+        <StoreSheet
+          stores={stores}
+          currentId={currentStore?.store.id ?? null}
+          switching={switching}
+          onSelect={onSelectStore}
+          onClose={() => setStoreSheet(false)}
+        />
       )}
     </div>
   );

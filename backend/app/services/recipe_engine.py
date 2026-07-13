@@ -468,6 +468,7 @@ class MarketCandidate:
     tier: int                    # 0 proteins, 1 hero produce, 2 other produce
     cross_store: bool = False    # anchored at a saved store other than default
     repeat: bool = False         # deliberate repeat after full-pool exhaustion
+    user_pin: bool = False       # user pinned this deal ("Cook with this sale")
 
     @property
     def clean_name(self) -> str:
@@ -639,6 +640,11 @@ def _market_block(cands: list[MarketCandidate], chain_name: str | None) -> str:
             f" — at {c.store}" if c.cross_store and c.store
             else ""
         )
+        pin = (
+            " [USER-PINNED — their explicit \"cook with this sale\" choice]"
+            if c.user_pin
+            else ""
+        )
         rep = (
             " [REPEAT ANCHOR — every distinct sale anchor across the saved "
             "stores is already in use tonight; say so in why_this_recipe]"
@@ -646,10 +652,10 @@ def _market_block(cands: list[MarketCandidate], chain_name: str | None) -> str:
             else ""
         )
         lines.append(
-            f"- MARKET PICK {i}: build around {d.product_name}: "
+            f"- MARKET PICK {i}{pin}: build around {d.product_name}: "
             f"${d.sale_price}{unit}{sav}{at}{rep}"
         )
-    return (
+    block = (
         f"\n\nMARKET PICKS — this batch MUST include exactly {len(cands)} MARKET PICK "
         "concept(s), one per ASSIGNED anchor below. A market pick is a dinner ANCHORED "
         f"on a strong current deal at {chain_name or 'the store'} (or the labeled "
@@ -663,6 +669,18 @@ def _market_block(cands: list[MarketCandidate], chain_name: str | None) -> str:
         "The pantry-first rule (#2) is WAIVED for a market pick's anchor — buying it "
         "is the point. Every OTHER concept stays pantry-first."
     )
+    pinned = [c for c in cands if c.user_pin]
+    if pinned:
+        names = ", ".join(c.deal.product_name or "" for c in pinned)
+        block += (
+            "\n\nUSER-PINNED DEALS are different from ordinary market picks: the "
+            f"user explicitly chose to buy {names}. EVERY concept in this batch "
+            "must feature each pinned deal as a real ingredient (prominently, "
+            "never a garnish) — the assigned concept ANCHORS it, the others cook "
+            "with it. These are user-chosen purchases: the pantry-first rule and "
+            "any purchase-minimizing pressure are fully waived for them."
+        )
+    return block
 
 
 def _match_candidate(
@@ -701,6 +719,132 @@ def _protein_block(floor: int) -> str:
         "on-sale proteins — or discard the concept. Carb-anchored dishes must be "
         "protein-fortified, never served as-is."
     )
+
+
+# --------------------------------------------------------------------------- #
+# Pinned deals — "Cook with this sale" (Prompt 37 C)
+# --------------------------------------------------------------------------- #
+async def _resolve_deal_pins(
+    db: AsyncSession, user_id: int, deal_ids: list[int]
+) -> list[DealCache]:
+    """Validate pinned deals: they must exist, be CURRENT-VALID, and belong to
+    one of the user's saved stores' regions. Raises ValueError otherwise."""
+    if not deal_ids:
+        return []
+    ids = list(dict.fromkeys(deal_ids))
+    stores = await _saved_stores(db, user_id)
+    regions = {s.region_key for s in stores if s.region_key is not None}
+    chains = {s.chain_id for s in stores}
+    today = date.today()
+    rows = (
+        (await db.execute(select(DealCache).where(DealCache.id.in_(ids))))
+        .scalars()
+        .all()
+    )
+    by_id = {d.id: d for d in rows}
+    bad: list[int] = []
+    for i in ids:
+        d = by_id.get(i)
+        valid = (
+            d is not None
+            and (d.valid_to is None or d.valid_to >= today)
+            and (d.valid_from is None or d.valid_from <= today)
+            and (
+                (d.region_key is not None and d.region_key in regions)
+                or (d.region_key is None and d.chain_id in chains)
+            )
+        )
+        if not valid:
+            bad.append(i)
+    if bad:
+        raise ValueError(f"Pinned deals not found, expired, or not from your "
+                         f"saved stores: {bad}")
+    return [by_id[i] for i in ids]
+
+
+def _deal_pin_candidates(
+    deal_pins: list[DealCache], stores: list, default_row
+) -> list[MarketCandidate]:
+    """Pinned deals as DESIGNATED market anchors (user_pin=True): priced from
+    OUR cache, labeled with their store, cross-store when not the default."""
+    chain_names = {s.chain_id: s.chain_name for s in stores}
+    out: list[MarketCandidate] = []
+    for d in deal_pins:
+        clean = ingredient_matcher.normalize_flyer_name(d.product_name or "", d.brand)
+        norm = ingredient_matcher._norm(clean or d.product_name or "")
+        iid = d.matched_ingredient_id
+        cross = default_row is not None and not (
+            d.region_key == default_row.region_key
+            if d.region_key is not None
+            else d.chain_id == default_row.chain_id
+        )
+        out.append(MarketCandidate(
+            deal=d,
+            store=chain_names.get(d.chain_id),
+            iid=iid,
+            key=f"i{iid}" if iid is not None else f"n:{norm}",
+            tier=0,
+            cross_store=cross,
+            user_pin=True,
+        ))
+    return out
+
+
+def _deal_pin_dicts(cands: list[MarketCandidate]) -> list[dict]:
+    """pinned_items_json entries for deal pins — labeled + priced so the batch
+    chip can render '🏷️ salmon $8.99 — your pick'."""
+    return [
+        {
+            "name": c.clean_name or c.deal.product_name,
+            "deal": True,
+            "sale_price": str(c.deal.sale_price),
+            "price_unit": c.deal.price_unit,
+            "store": c.store,
+        }
+        for c in cands
+    ]
+
+
+async def _enforce_deal_pin_slots(
+    client: AsyncAnthropic,
+    concepts: list[dict],
+    pin_cands: list[MarketCandidate],
+    all_cands: list[MarketCandidate],
+    pantry_iids: set[int],
+    base_system: list[dict] | str,
+    ctx_text: str,
+) -> list[dict]:
+    """Every pinned deal must have its anchoring concept (P37 C7). If the
+    model skipped one, re-point a non-market concept at it (verified)."""
+    for cand in pin_cands:
+        if any(
+            _match_candidate(c.get("anchor_ingredient") or "", [cand], pantry_iids)
+            for c in concepts
+        ):
+            continue
+        target = next(
+            (
+                i for i, c in enumerate(concepts)
+                if _match_candidate(
+                    c.get("anchor_ingredient") or "", all_cands, pantry_iids
+                ) is None
+            ),
+            0,
+        )
+        res = await _regen_for_market_anchor(
+            client, concepts[target], cand, base_system, ctx_text
+        )
+        if isinstance(res, dict):
+            concepts[target] = res
+        if _match_candidate(
+            concepts[target].get("anchor_ingredient") or "", [cand], pantry_iids
+        ):
+            logger.info("Deal pin: re-anchored concept %d onto pinned %r",
+                        target, cand.deal.product_name)
+        else:
+            logger.warning("Deal pin: could not secure an anchoring concept "
+                           "for pinned %r", cand.deal.product_name)
+    return concepts
 
 
 # --------------------------------------------------------------------------- #
@@ -2946,6 +3090,7 @@ async def generate_concepts(
     direction: str | None = None,
     difficulties: list[str] | None = None,
     *,
+    pinned_deal_ids: list[int] | None = None,
     category: str = "generation",
 ) -> list[Recipe]:
     """One fast Claude call → N persisted concept recipes (status='concept').
@@ -2956,6 +3101,7 @@ async def generate_concepts(
     """
     pins = await _resolve_pins(db, user.id, pinned_ids or [])
     pin_dicts = _pin_dicts(pins)
+    deal_pins = await _resolve_deal_pins(db, user.id, pinned_deal_ids or [])
     ctx = await _load_context(db, user)
     # Self-heal a starved flyer cache (the all-beef feed regression): schedule
     # background refreshes for saved stores with no current deals, so this
@@ -3025,8 +3171,26 @@ async def generate_concepts(
         )
         for name, deals in ctx.other_store_deals
     ]
-    ctx.market_candidates = _select_market_anchors(
-        primary_pool, other_pools, market_slots, recent_market
+    # Pinned deals (P37 C): DESIGNATED anchors ahead of everything else. They
+    # claim market slots first (outranking even the perishable reservation —
+    # an explicit user choice beats every heuristic), and the selector fills
+    # only what's left, never re-picking the same product.
+    stores_rows = await _saved_stores(db, user.id)
+    pin_cands = _deal_pin_candidates(
+        deal_pins, stores_rows, stores_rows[0] if stores_rows else None
+    )
+    if pin_cands:
+        market_slots = min(max(market_slots, len(pin_cands)), n)
+        primary_pool = [
+            c for c in primary_pool
+            if not any(_same_product(c, p) for p in pin_cands)
+        ]
+        other_pools = [
+            [c for c in pool if not any(_same_product(c, p) for p in pin_cands)]
+            for pool in other_pools
+        ]
+    ctx.market_candidates = pin_cands + _select_market_anchors(
+        primary_pool, other_pools, market_slots - len(pin_cands), recent_market
     )
     # Badge plumbing (P35 #2): keep the FULL anchorable pool so a purchase-
     # anchored concept the model produced outside its assignments still gets
@@ -3195,7 +3359,9 @@ async def generate_concepts(
                 )
             # Owned-perishable guarantee (P34 A2): ≥1 non-market concept
             # anchored on the top perishable; use_soon leads with urgency.
-            if perishable is not None:
+            # (Waived only if user-pinned deals claim every slot — an explicit
+            # choice outranks the reservation.)
+            if perishable is not None and len(pin_cands) < n:
                 raw = await _enforce_perishable_slot(
                     client, raw, perishable, ctx.market_candidates, pantry_iids,
                     system_blocks, user_msg, perishable_use_soon,
@@ -3214,6 +3380,13 @@ async def generate_concepts(
                 client, raw, ctx.market_candidates, pantry_iids,
                 system_blocks, user_msg,
             )
+            # Pinned deals (P37 C7): each user pin must have its anchoring
+            # concept; re-point one if the model skipped it.
+            if pin_cands:
+                raw = await _enforce_deal_pin_slots(
+                    client, raw, pin_cands, ctx.market_candidates, pantry_iids,
+                    system_blocks, user_msg,
+                )
             # One anchor, one dish (all-beef feed hotfix): rule 9's two-axis
             # distinctness let five beef dishes ship by rotating format and
             # cuisine; cap every anchor at one concept per batch.
@@ -3302,6 +3475,7 @@ async def generate_concepts(
                 ),
                 "store": cand.store or ctx.chain_name,
                 "cross_store": cand.cross_store,
+                "user_pin": cand.user_pin,
             }
         # Provisional honesty flags on the CONCEPT's claimed macros (P32 C6/C7):
         # never render a sub-floor or heavy number unannotated, even before the
@@ -3326,7 +3500,7 @@ async def generate_concepts(
             tags=r.get("tags"),
             cuisine=cuisine,
             generated_store_name=ctx.store_name,
-            pinned_items_json=pin_dicts or None,
+            pinned_items_json=(pin_dicts + _deal_pin_dicts(pin_cands)) or None,
             direction=ctx.direction or None,
             difficulties=tiers or None,
             critic_json=critic or None,

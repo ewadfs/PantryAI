@@ -183,9 +183,10 @@ export default function RecipesPage() {
     const activeDiffs = difficultiesRef.current;
     try {
       const res = await generateRecipes(
-        activePins.map((p) => p.id),
+        activePins.filter((p) => p.kind !== "deal").map((p) => p.id),
         activeDirection,
         activeDiffs,
+        activePins.filter((p) => p.kind === "deal").map((p) => p.id),
       );
       setRecipes(res.recipes);
       setGeneratedAt(res.recipes[0]?.generated_at ?? new Date().toISOString());
@@ -376,8 +377,25 @@ export default function RecipesPage() {
     if (pinId) {
       setPins([{ id: Number(pinId), name: params.get("name") || "item" }]);
     }
+    // "Cook with this sale" (P37): a deal pin arrives as a distinct 🏷️ chip.
+    const dealId = params.get("pinDeal");
+    if (dealId) {
+      setPins((prev) => [
+        ...prev,
+        {
+          id: Number(dealId),
+          name: params.get("dealName") || "deal",
+          kind: "deal",
+          price: params.get("dealPrice"),
+          priceUnit: params.get("dealUnit"),
+        },
+      ]);
+    }
     // ?tab=week lands on This Week; a pin or generate implies Discover.
-    if (params.get("tab") === "week" && !pinId && params.get("generate") !== "1") {
+    if (
+      params.get("tab") === "week" && !pinId && !dealId &&
+      params.get("generate") !== "1"
+    ) {
       setTab("week");
     }
     if (params.get("generate") === "1") {
@@ -386,7 +404,7 @@ export default function RecipesPage() {
       setWarming(false);
       generate();
     } else {
-      if (pinId) window.history.replaceState({}, "", "/recipes");
+      if (pinId || dealId) window.history.replaceState({}, "", "/recipes");
       loadLatest();
     }
     return () => {
@@ -550,10 +568,17 @@ export default function RecipesPage() {
             pantryItems={pantryItems}
             onAddPin={(p) =>
               setPins((prev) =>
-                prev.length < 3 && !prev.some((x) => x.id === p.id) ? [...prev, p] : prev,
+                prev.length < 3 &&
+                !prev.some((x) => x.id === p.id && (x.kind ?? "pantry") === (p.kind ?? "pantry"))
+                  ? [...prev, p]
+                  : prev,
               )
             }
-            onRemovePin={(id) => setPins((prev) => prev.filter((x) => x.id !== id))}
+            onRemovePin={(id, kind) =>
+              setPins((prev) =>
+                prev.filter((x) => !(x.id === id && (x.kind ?? "pantry") === (kind ?? "pantry"))),
+              )
+            }
             difficulties={difficulties}
             onToggleDifficulty={toggleDifficulty}
             direction={direction}

@@ -746,6 +746,19 @@ class CircularExtractor:
                     with_regular += 1
                 rows.append(row)
 
+        if rows:
+            # A fresh extraction SUPERSEDES the region's previous rows for
+            # this chain — without this, a raced double-activation (observed
+            # live: two King Kullen fetches fired within seconds) stacked
+            # duplicate deals. Guarded on non-empty rows so a failed/empty
+            # extraction never wipes a region to zero.
+            supersede = delete(DealCache).where(
+                DealCache.chain_id == fetch.chain_id,
+                DealCache.fetch_id != fetch.id,
+            )
+            if region_key is not None:
+                supersede = supersede.where(DealCache.region_key == region_key)
+            await db.execute(supersede)
         db.add_all(rows)
         await ai_metering.persist_events(db, _cost_events)
         await db.flush()

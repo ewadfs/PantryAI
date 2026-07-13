@@ -36,6 +36,11 @@ async def _deals_refresh_loop() -> None:
                 if got:
                     try:
                         async with AsyncSessionLocal() as db:
+                            # Finish extractions parked on slow Batches-API
+                            # jobs FIRST — they're already paid for.
+                            collected = await CircularExtractor().collect_pending_batches(db)
+                            if collected:
+                                logger.info("Parked-batch sweep: %s", collected)
                             results = await CircularExtractor().run_pipeline(db)
                             await db.commit()
                         by_status: dict[str, int] = {}
@@ -45,6 +50,9 @@ async def _deals_refresh_loop() -> None:
                             )
                         logger.info("Deals refresh cycle: %s combos — %s",
                                     len(results), by_status or "none active")
+                        pending_remain = any(
+                            c.get("status") == "still_processing" for c in collected
+                        ) or any(r.get("pending_batch") for r in results)
                     finally:
                         await lock_conn.execute(
                             text("SELECT pg_advisory_unlock(:k)"),
@@ -52,11 +60,18 @@ async def _deals_refresh_loop() -> None:
                         )
                 else:
                     logger.info("Deals refresh: another replica holds the lock; skipping cycle.")
+                    pending_remain = False
         except asyncio.CancelledError:
             raise
         except Exception:  # noqa: BLE001 — the loop must survive bad cycles
             logger.exception("Deals refresh cycle failed; retrying next cycle.")
-        await asyncio.sleep(max(1, settings.deals_refresh_hours) * 3600)
+            pending_remain = False
+        # Parked batches get a fast 15-min sweep cadence; quiet cycles keep
+        # the configured hours.
+        await asyncio.sleep(
+            900 if pending_remain
+            else max(1, settings.deals_refresh_hours) * 3600
+        )
 
 
 @asynccontextmanager

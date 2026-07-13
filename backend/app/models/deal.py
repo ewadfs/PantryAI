@@ -36,6 +36,10 @@ class CircularFetch(Base):
     valid_to: Mapped[date | None] = mapped_column(Date)
     # Deals region this fetch covers ({chain_slug}:{state}).
     region_key: Mapped[str | None] = mapped_column(String(60))
+    # A submitted-but-unfinished Batches-API extraction: the paid batch id is
+    # recorded instead of abandoned when it outlives the in-process polling
+    # ceiling; the deals-refresh scheduler collects it when it ends.
+    pending_batch_id: Mapped[str | None] = mapped_column(String(64))
     fetched_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )

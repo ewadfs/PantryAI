@@ -12,7 +12,7 @@ import base64
 import json
 import logging
 import re
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
 from io import BytesIO
 from typing import Any
@@ -20,7 +20,7 @@ from typing import Any
 import httpx
 from anthropic import AsyncAnthropic
 from PIL import Image
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import AsyncSessionLocal
@@ -476,11 +476,41 @@ def _trim(value: Any, length: int) -> str | None:
     return s[:length] if s else None
 
 
+class _BatchPending(Exception):
+    """A Batches-API extraction outlived the in-process polling ceiling; the
+    paid batch is parked on the fetch row for scheduler collection."""
+
+    def __init__(self, batch_id: str):
+        self.batch_id = batch_id
+        super().__init__(batch_id)
+
+
 class CircularExtractor:
     """Runs Claude Vision over circular pages and caches the extracted deals."""
 
     def __init__(self) -> None:
         self._client = AsyncAnthropic(api_key=settings.anthropic_api_key)
+
+    def _parse_batch_entry(self, entry) -> tuple[int | None, list[dict]]:
+        """One Batches-API result entry -> (page_number, deals)."""
+        try:
+            page_number = int(str(entry.custom_id).split("-")[-1])
+        except (TypeError, ValueError):
+            return None, []
+        if entry.result.type != "succeeded":
+            return page_number, []
+        message = entry.result.message
+        ai_metering.record_usage(
+            settings.vision_model, message.usage, category="circular",
+            batch_api=True,
+        )
+        text = "".join(b.text for b in message.content if b.type == "text")
+        try:
+            data = _extract_json(text)
+            deals = data.get("deals", [])
+            return page_number, deals if isinstance(deals, list) else []
+        except (json.JSONDecodeError, ValueError):
+            return page_number, []
 
     async def extract_deals_batched(
         self, pages: list[tuple[int, bytes]], chain_name: str
@@ -532,29 +562,19 @@ class CircularExtractor:
             waited += _BATCH_POLL_S
             batch = await self._client.messages.batches.retrieve(batch.id)
         if batch.processing_status != "ended":
-            logger.warning("Circular batch %s did not finish in %ds", batch.id, waited)
-            return {}
+            # Never abandon a PAID batch (observed live: 12-page batches
+            # queued >90 min) — park it for the scheduler sweep.
+            logger.warning(
+                "Circular batch %s did not finish in %ds — parking for "
+                "scheduler collection", batch.id, waited,
+            )
+            raise _BatchPending(batch.id)
 
         out: dict[int, list[dict]] = {}
         async for entry in await self._client.messages.batches.results(batch.id):
-            try:
-                page_number = int(str(entry.custom_id).split("-")[-1])
-            except (TypeError, ValueError):
-                continue
-            if entry.result.type != "succeeded":
-                out[page_number] = []
-                continue
-            message = entry.result.message
-            ai_metering.record_usage(
-                settings.vision_model, message.usage, category="circular", batch_api=True
-            )
-            text = "".join(b.text for b in message.content if b.type == "text")
-            try:
-                data = _extract_json(text)
-                deals = data.get("deals", [])
-                out[page_number] = deals if isinstance(deals, list) else []
-            except (json.JSONDecodeError, ValueError):
-                out[page_number] = []
+            page_number, deals = self._parse_batch_entry(entry)
+            if page_number is not None:
+                out[page_number] = deals
         logger.info("Circular batch %s parsed %d pages", batch.id, len(out))
         return out
 
@@ -718,10 +738,18 @@ class CircularExtractor:
             *(_load(n, key) for n, key in enumerate(keys, start=1))
         )
 
-        with ai_metering.metering(
-            "circular", circular_fetch_id=fetch.id
-        ) as _cost_events:
-            deals_by_page = await self.extract_deals_batched(pages, chain_name)
+        try:
+            with ai_metering.metering(
+                "circular", circular_fetch_id=fetch.id
+            ) as _cost_events:
+                deals_by_page = await self.extract_deals_batched(pages, chain_name)
+        except _BatchPending as bp:
+            fetch.pending_batch_id = bp.batch_id
+            await db.commit()
+            return {
+                "pages": len(keys), "deals": 0, "matched": 0,
+                "regular_price": 0, "pending_batch": bp.batch_id,
+            }
         results = [(pn, deals_by_page.get(pn, [])) for pn, _img in pages]
 
         rows: list[DealCache] = []
@@ -787,9 +815,14 @@ class CircularExtractor:
                 CircularFetch.region_key == region_key,
                 CircularFetch.status.in_(("success", "partial")),
                 CircularFetch.valid_to >= today,
-                select(DealCache.id)
-                .where(DealCache.fetch_id == CircularFetch.id)
-                .exists(),
+                or_(
+                    select(DealCache.id)
+                    .where(DealCache.fetch_id == CircularFetch.id)
+                    .exists(),
+                    # A parked batch is in flight — don't re-capture and
+                    # re-pay while it's queued (the sweep clears stale ones).
+                    CircularFetch.pending_batch_id.isnot(None),
+                ),
             )
             .order_by(CircularFetch.fetched_at.desc())
         )
@@ -830,11 +863,14 @@ class CircularExtractor:
                 "error": f"extraction failed: {type(exc).__name__}: {exc}",
             }
         await db.commit()
-        return {
+        out = {
             "chain": slug, "region": region_key, "status": fetch.status,
             "pages": result["pages"], "deals": result["deals"],
             "matched": result["matched"], "regular_price": result["regular_price"],
         }
+        if result.get("pending_batch"):
+            out["pending_batch"] = result["pending_batch"]
+        return out
 
     async def _process_structured(
         self, db: AsyncSession, chain: SupportedChain, region_key: str
@@ -944,6 +980,15 @@ class CircularExtractor:
                 await db.commit()
 
             result = await self.process_combo(db, chain, region_key)
+            if result.get("pending_batch"):
+                # Extraction is parked at Anthropic; the scheduler sweep
+                # finishes the activation when the batch ends. Not a failure.
+                logger.info(
+                    "Demand activation for %s awaiting batch %s",
+                    slug, result["pending_batch"],
+                )
+                result["activated"] = False
+                return result
             if result.get("status") in ("success", "partial") and result.get(
                 "deals", 0
             ) > 0:
@@ -1049,6 +1094,109 @@ class CircularExtractor:
                     }
                 )
         return summary
+
+
+    async def collect_pending_batches(self, db: AsyncSession) -> list[dict]:
+        """Scheduler sweep: finish extractions whose Batches-API job outlived
+        the in-process ceiling. An ended batch inserts its deals (superseding
+        the region's older rows) and completes any interrupted activation; a
+        batch still queued after 26h marks the fetch failed so the combo
+        becomes re-fetchable."""
+        fetches = (
+            (
+                await db.execute(
+                    select(CircularFetch).where(
+                        CircularFetch.pending_batch_id.isnot(None)
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        if not fetches:
+            return []
+        await ingredient_matcher.preload(db)
+        out: list[dict] = []
+        for fetch in fetches:
+            bid = fetch.pending_batch_id
+            try:
+                batch = await self._client.messages.batches.retrieve(bid)
+            except Exception as exc:  # noqa: BLE001 — unretrievable = give up
+                fetch.pending_batch_id = None
+                fetch.status = "failed"
+                fetch.error_message = f"pending batch unretrievable: {exc}"[:1000]
+                await db.commit()
+                out.append({"fetch": fetch.id, "batch": bid, "status": "lost"})
+                continue
+            if batch.processing_status != "ended":
+                age = datetime.now(timezone.utc) - fetch.fetched_at
+                if age > timedelta(hours=26):
+                    fetch.pending_batch_id = None
+                    fetch.status = "failed"
+                    fetch.error_message = "batch never finished within 26h"
+                    await db.commit()
+                    out.append({"fetch": fetch.id, "batch": bid, "status": "expired"})
+                else:
+                    out.append(
+                        {"fetch": fetch.id, "batch": bid, "status": "still_processing"}
+                    )
+                continue
+
+            chain = await db.get(SupportedChain, fetch.chain_id)
+            deals_by_page: dict[int, list[dict]] = {}
+            with ai_metering.metering(
+                "circular", circular_fetch_id=fetch.id
+            ) as _cost_events:
+                async for entry in await self._client.messages.batches.results(bid):
+                    pn, deals = self._parse_batch_entry(entry)
+                    if pn is not None:
+                        deals_by_page[pn] = deals
+            rows: list[DealCache] = []
+            matched = 0
+            for pn, deals in deals_by_page.items():
+                for raw in deals:
+                    row = self._build_deal(
+                        raw, chain_id=fetch.chain_id, fetch_id=fetch.id,
+                        valid_from=fetch.valid_from, valid_to=fetch.valid_to,
+                        page_number=pn, region_key=fetch.region_key,
+                    )
+                    if row is None:
+                        continue
+                    if row.matched_ingredient_id is not None:
+                        matched += 1
+                    rows.append(row)
+            if rows:
+                supersede = delete(DealCache).where(
+                    DealCache.chain_id == fetch.chain_id,
+                    DealCache.fetch_id != fetch.id,
+                )
+                if fetch.region_key is not None:
+                    supersede = supersede.where(
+                        DealCache.region_key == fetch.region_key
+                    )
+                await db.execute(supersede)
+                db.add_all(rows)
+            else:
+                fetch.status = "failed"
+                fetch.error_message = "parked batch ended with no extractable deals"
+            fetch.pending_batch_id = None
+            await ai_metering.persist_events(db, _cost_events)
+            if chain is not None and rows and chain.deals_status != "active":
+                chain.deals_status = "active"
+                logger.info(
+                    "Deferred activation completed for %s: %d deals collected "
+                    "from parked batch %s", chain.chain_slug, len(rows), bid,
+                )
+            await db.commit()
+            logger.info(
+                "Collected parked batch %s for fetch %s: %d deals (%d matched)",
+                bid, fetch.id, len(rows), matched,
+            )
+            out.append({
+                "fetch": fetch.id, "batch": bid, "status": "collected",
+                "deals": len(rows), "matched": matched,
+            })
+        return out
 
 
 async def activate_region_bg(chain_id: int, region_key: str, zip_code: str | None = None) -> None:

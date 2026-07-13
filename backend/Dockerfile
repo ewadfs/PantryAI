@@ -22,4 +22,7 @@ ENV PORT=8000
 EXPOSE 8000
 
 # Use shell form so $PORT is expanded at container start.
-CMD uvicorn app.main:app --host 0.0.0.0 --port $PORT
+# Migrations run first: schema changes (e.g. Prompt 32's recipes.quality_flags_json
+# + ai_cost_events.stage) must land before the code that writes them serves
+# traffic. `alembic upgrade head` is a no-op when already current.
+CMD alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port $PORT

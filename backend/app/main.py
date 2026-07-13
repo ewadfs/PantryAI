@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import os
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -128,11 +129,23 @@ app.include_router(prices.router, prefix=API_PREFIX)
 app.include_router(stats.router, prefix=API_PREFIX)
 
 
+# The commit serving this process — Railway injects RAILWAY_GIT_COMMIT_SHA at
+# build/deploy time, so the production URL itself can answer "what's live?".
+_SERVING_COMMIT = (
+    os.environ.get("RAILWAY_GIT_COMMIT_SHA")
+    or os.environ.get("GIT_COMMIT_SHA")
+    or None
+)
+
+
 @app.get("/")
-async def root() -> dict[str, str]:
-    return {"app": "PantryAI API", "status": "ok", "docs": "/docs"}
+async def root() -> dict[str, str | None]:
+    return {
+        "app": "PantryAI API", "status": "ok", "docs": "/docs",
+        "commit": _SERVING_COMMIT,
+    }
 
 
 @app.get("/health")
-async def health() -> dict[str, str]:
-    return {"status": "ok"}
+async def health() -> dict[str, str | None]:
+    return {"status": "ok", "commit": _SERVING_COMMIT}

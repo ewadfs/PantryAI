@@ -289,7 +289,12 @@ async def top_deals(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> list[DealRead]:
-    """Top 5 deals by savings for the home screen (default store's chain×region)."""
+    """Top 5 deals for the home screen (default store's chain×region).
+
+    Flyer-page order first: retailers front-load their loss leaders, so
+    page-1 deals are the likeliest best buys — then biggest savings within a
+    page. Structured deals without a flyer page fall back to savings order.
+    """
     chain_id, region_key = await _default_region(db, current_user.id)
     if chain_id is None:
         return []
@@ -300,7 +305,11 @@ async def top_deals(
             await db.execute(
                 select(DealCache)
                 .where(*_current_valid(chain_id, region_key, today))
-                .order_by(nulls_last(DealCache.savings_pct.desc()), DealCache.id)
+                .order_by(
+                    nulls_last(DealCache.page_number.asc()),
+                    nulls_last(DealCache.savings_pct.desc()),
+                    DealCache.id,
+                )
                 .limit(5)
             )
         )

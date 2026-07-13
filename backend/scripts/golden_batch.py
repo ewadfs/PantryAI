@@ -297,6 +297,8 @@ class _StubMessages:
             return _msg(self._price_edit(user))
         if "CORRECTION — PANTRY MODE BUDGET" in user:
             return _msg({"recipes": [self._pantry_budget_regen()]})
+        if "CORRECTION — COMPUTED PROTEIN FAILURE" in user:
+            return _msg({"recipes": [self._computed_failure_regen()]})
         if "ANCHOR PROMINENCE VIOLATION" in user:
             return _msg({"recipes": [self._prominence_regen(user)]})
         if "ANCHOR CAP VIOLATION" in user:
@@ -795,6 +797,18 @@ class _StubMessages:
         ]
         return {"recipes": recipes[:n]}
 
+    def _computed_failure_regen(self) -> dict:
+        """P39 A2: the cauliflower concept computes ~19 g against the 54 g
+        floor (>25% short) — a failed concept. The slot-regeneration answer
+        rebuilds around a protein that actually carries the floor."""
+        return self._owned_concept(
+            "Ground Turkey Rice Bowl",
+            "Browned turkey over rice with blistered peppers.", "medium",
+            "ground turkey", "bowl", "american", ["chili-lime turkey"],
+            ["ground turkey", "white rice", "red bell pepper", "olive oil"],
+            unowned=("ground turkey",),
+        )
+
     def _pantry_budget_regen(self) -> dict:
         """The budget-regen answer swaps the salmon for an owned anchor but —
         still like a live model — sneaks in two minor buys. The survivor must
@@ -899,7 +913,11 @@ class _StubMessages:
                 "Season the beef with chili powder and smoked paprika.",
                 "Sear hard in oil without stirring for a deep crust; break up.",
                 "Char tortillas over the flame.",
-                "Assemble with cheddar and lime crema.",
+                # The live stew leak (P39 A3): a prose protein claim that
+                # contradicts the computed panel — the deterministic sync must
+                # rewrite it to the computed figure.
+                "Assemble with cheddar and lime crema. Total protein per "
+                "serving: 70 g.",
             ],
             "nutrition_per_serving": {"calories": 1104, "protein_g": 62,
                                       "carbs_g": 48, "fat_g": 70, "fiber_g": 4},
@@ -1473,6 +1491,23 @@ async def run_store(default_slug: str, stub: bool) -> None:
                   f"{' — at ' + a.get('store') if a.get('cross_store') else ''}; "
                   f"why: \"{(rogue.why_this_recipe or '')[:80]}\"")
 
+        # -- P39: prose-nutrition sync + badge coherence over the batch ----- #
+        n_contradictions = sum(
+            recipe_engine._prose_nutrition_mismatches(r) for r in rows
+        )
+        both = sum(
+            1 for r in rows
+            if r.is_market_pick and all(
+                k.get("in_pantry") is True
+                for k in (r.ingredients_json or r.key_ingredients_json or [])
+                if isinstance(k, dict)
+            )
+        )
+        print(f"prose nutrition scan: {n_contradictions} contradiction(s) "
+              f"between narrative/instruction figures and computed panels")
+        print(f"badge coherence: {both} recipe(s) rendering All-pantry + "
+              f"Market pick simultaneously")
+
         prominent = 0
         market_rows = [r for r in rows if r.is_market_pick]
         for r in market_rows:
@@ -1724,6 +1759,105 @@ async def mini_checks() -> None:
         print(f"pantry mode OFF @ N=5: market picks restored: {markets_off}; "
               f"pantry_mode column: "
               f"{'all false' if not any(r.pantry_mode for r in off_concepts) else 'STUCK ON'}")
+
+        # (f) P39 RE-ENFORCEMENT — reconstruct the three LIVE leaks as shipped
+        # recipe states and run the deterministic post-compute pass
+        # (recipe_engine.enforce_computed — the same pass _fill_details and
+        # scripts/reenforce_batch.py share).
+        print("P39 re-enforcement over reconstructed live leaks:")
+        beef_iid, _c = ingredient_matcher.match_ingredient("ground beef")
+        # 1. The stew: 31 g calculated panel, chipless, with a 63 g prose claim.
+        stew = Recipe(
+            user_id=user.id, status="ready",
+            title="Smoky Chickpea & Vegetable Stew",
+            description="A hearty stew claiming big protein.",
+            why_this_recipe="Delivers 63 g of protein per serving.",
+            servings=2,
+            ingredients_json=[{"generic_name": "canned chickpeas",
+                               "in_pantry": True}],
+            instructions_json=[
+                "Simmer everything until thick.",
+                "Total protein per serving: 63 g.",
+            ],
+            nutrition_json={"calories": 520, "protein_g": 31,
+                            "source": "calculated", "coverage": 0.95},
+            signature_json={"anchor_ingredient": "canned chickpeas"},
+            is_market_pick=False,
+        )
+        s = recipe_engine.enforce_computed(stew, stew.ingredients_json, 31,
+                                           520, 54, 1100, 2000)
+        chip = (s["flags"] or {}).get("protein_below_floor")
+        print(f"  stew (31g calculated, '63 g' prose, chipless): path=chip "
+              f"(post-hoc re-enforcement cannot regenerate) -> amber "
+              f"{chip['protein_g']}g chip; prose figures corrected: "
+              f"{s.get('prose_nutrition_fixed', 0)}; instruction now: "
+              f"{stew.instructions_json[1]!r}; why now: "
+              f"{stew.why_this_recipe!r}")
+        print(f"  (in-pipeline, the same computed shortfall regenerates the "
+              f"slot — see the Lidl run's cauliflower slot above)")
+        # 2. The beef skillet: owned anchor wearing a market badge + S&S price.
+        skillet = Recipe(
+            user_id=user.id, status="ready",
+            title="Carne Asada Beef & Egg Skillet",
+            description="Owned beef, badged as a market pick.",
+            why_this_recipe=(
+                "Built around 80% lean ground beef, $6.49/lb this week — at "
+                "Stop & Shop. Your ground beef should be used in the next "
+                "day or two."
+            ),
+            servings=2,
+            ingredients_json=[
+                {"generic_name": "ground beef", "in_pantry": True},
+                {"generic_name": "cheddar cheese", "in_pantry": True},
+            ],
+            nutrition_json={"calories": 720, "protein_g": 58,
+                            "source": "calculated", "coverage": 1.0},
+            signature_json={"anchor_ingredient": "ground beef"},
+            is_market_pick=True,
+            market_anchor_json={
+                "name": "80% lean ground beef", "anchor_key": f"i{beef_iid}",
+                "sale_price": "6.49", "price_unit": "lb",
+                "store": "Stop & Shop", "cross_store": True, "user_pin": False,
+            },
+        )
+        s = recipe_engine.enforce_computed(skillet, skillet.ingredients_json,
+                                           58, 720, 54, 1100, 2000)
+        print(f"  beef skillet (owned anchor + badge + S&S citation): "
+              f"badge dropped={s.get('badge_dropped', False)}, "
+              f"market_anchor={skillet.market_anchor_json}, why now: "
+              f"{skillet.why_this_recipe!r}")
+        # 3. The bacon-pinto bake hiding 1.5 lb of on-sale chicken.
+        bake = Recipe(
+            user_id=user.id, status="ready",
+            title="BBQ Bacon & Pinto Bean Pasta Bake",
+            description="Smoky bacon and pinto beans baked into rigatoni.",
+            servings=2,
+            key_ingredients_json=[
+                {"generic_name": "bacon", "in_pantry": True},
+                {"generic_name": "canned black beans", "in_pantry": True},
+                {"generic_name": "rigatoni", "in_pantry": True},
+            ],
+            ingredients_json=[
+                {"generic_name": "bacon", "quantity": "4", "unit": "oz",
+                 "in_pantry": True},
+                {"generic_name": "rigatoni", "quantity": "1", "unit": "lb",
+                 "in_pantry": True},
+                {"generic_name": "chicken breast", "quantity": "1.5",
+                 "unit": "lb", "in_pantry": False, "on_sale": True,
+                 "sale_store": "Lidl", "sale_price": "1.99"},
+            ],
+            nutrition_json={"calories": 880, "protein_g": 61,
+                            "source": "calculated", "coverage": 1.0},
+            signature_json={"anchor_ingredient": "bacon"},
+            is_market_pick=False,
+        )
+        n_keys_before = len(bake.key_ingredients_json)
+        s = recipe_engine.enforce_computed(bake, bake.ingredients_json, 61,
+                                           880, 54, 1100, 2000)
+        print(f"  bacon-pinto bake (1.5 lb hidden chicken): surfaced="
+              f"{s.get('co_proteins')}; description now: {bake.description!r}; "
+              f"key list {n_keys_before} -> {len(bake.key_ingredients_json)} "
+              f"(new line on_sale=$1.99 — the card re-prices)")
 
         # (c) DEALS STARVATION -> anchor cap (the live all-beef regression).
         # Wipe every golden flyer AND the fetch history (so the self-heal

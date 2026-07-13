@@ -3996,7 +3996,376 @@ def _effective_nutrition(
             protein = float(model_nut["protein_g"])
         except (TypeError, ValueError):
             protein = None
+    if model_nut is None and computed:
+        # P39 A1: the detail response carried no usable estimate. Never let the
+        # Stage-1 concept claim survive as the panel next to computed figures —
+        # ship the low-coverage compute, honestly labeled as an estimate.
+        return {
+            "calories": computed["calories"],
+            "protein_g": computed["protein_g"],
+            "carbs_g": computed["carbs_g"],
+            "fat_g": computed["fat_g"],
+            "fiber_g": computed["fiber_g"],
+            "source": "est",
+            "coverage": computed["coverage"],
+        }, computed["protein_g"]
     return model_nut, protein
+
+
+# --------------------------------------------------------------------------- #
+# Post-compute enforcement (Prompt 39) — the honesty rules re-run on the
+# COMPUTED numbers after Stage-2 details land. Deterministic and model-free,
+# shared by the detail pipeline and scripts/reenforce_batch.py.
+# --------------------------------------------------------------------------- #
+# Computed protein more than 25% under the floor is a FAILED CONCEPT, not a
+# chip case (P39 A2) — seasoning tweaks can't close that gap.
+_SEVERE_SHORTFALL_PCT = 0.25
+_PROSE_NUT_TOL = 0.10
+_NUM_GRAMS_RE = re.compile(r"(\d+(?:\.\d+)?)\s*(?:g|grams?)\b", re.I)
+_NUM_CALS_RE = re.compile(r"(\d+(?:,\d{3})?)\s*(?:k?cal(?:orie)?s?)\b", re.I)
+_SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?])\s+")
+
+
+def _fix_nutrition_text(
+    text: str | None, protein: float | None, calories: float | None
+) -> tuple[str | None, int]:
+    """P39 A3: grams/calorie claims that disagree with the computed panel by
+    more than 10% are rewritten TO the computed figure — deterministic
+    substitution (exact beats a paraphrase). Returns (text, n_fixed)."""
+    if not text:
+        return text, 0
+    fixed = 0
+
+    def _grams(m: re.Match) -> str:
+        nonlocal fixed
+        s, e = m.span()
+        window = text[max(0, s - 45):min(len(text), e + 45)].lower()
+        if "protein" not in window or not protein or protein <= 0:
+            return m.group(0)
+        try:
+            val = float(m.group(1))
+        except ValueError:
+            return m.group(0)
+        if abs(val - protein) / float(protein) > _PROSE_NUT_TOL:
+            fixed += 1
+            return f"{round(protein)} g"
+        return m.group(0)
+
+    out = _NUM_GRAMS_RE.sub(_grams, text)
+
+    def _cals(m: re.Match) -> str:
+        nonlocal fixed
+        if not calories or calories <= 0:
+            return m.group(0)
+        try:
+            val = float(m.group(1).replace(",", ""))
+        except ValueError:
+            return m.group(0)
+        if abs(val - calories) / float(calories) > _PROSE_NUT_TOL:
+            fixed += 1
+            return f"{round(calories)} calories"
+        return m.group(0)
+
+    return _NUM_CALS_RE.sub(_cals, out), fixed
+
+
+def _prose_nutrition_mismatches(recipe: Recipe) -> int:
+    """Scan-only companion to :func:`_fix_nutrition_text` (report/verify)."""
+    nut = recipe.nutrition_json if isinstance(recipe.nutrition_json, dict) else {}
+    protein = nut.get("protein_g")
+    calories = nut.get("calories")
+    n = 0
+    texts = [recipe.why_this_recipe, recipe.description] + [
+        s for s in (recipe.instructions_json or []) if isinstance(s, str)
+    ]
+    for t in texts:
+        _fixed_text, k = _fix_nutrition_text(t, protein, calories)
+        n += k
+    return n
+
+
+def _fix_prose_nutrition(
+    recipe: Recipe, protein: float | None, calories: float | None
+) -> int:
+    """Apply the nutrition-prose sync to why/description/instructions."""
+    n = 0
+    for attr in ("why_this_recipe", "description"):
+        new, k = _fix_nutrition_text(getattr(recipe, attr), protein, calories)
+        if k:
+            setattr(recipe, attr, new)
+            n += k
+    steps = recipe.instructions_json
+    if isinstance(steps, list):
+        out_steps: list = []
+        changed = False
+        for s in steps:
+            if isinstance(s, str):
+                new, k = _fix_nutrition_text(s, protein, calories)
+                out_steps.append(new)
+                changed = changed or bool(k)
+                n += k
+            else:
+                out_steps.append(s)
+        if changed:
+            recipe.instructions_json = out_steps
+    return n
+
+
+def _strip_price_sentences(text: str | None) -> str | None:
+    """Drop sentences citing dollar figures (an owned anchor gets no
+    shop-for-this pricing); everything else — e.g. the urgency line — stays."""
+    if not text or not _PRICE_RE.search(text):
+        return text
+    kept = [s for s in _SENTENCE_SPLIT_RE.split(text) if not _PRICE_RE.search(s)]
+    return " ".join(kept).strip() or None
+
+
+def _anchor_ing_line(recipe: Recipe, ingredients: list[dict]) -> dict | None:
+    """The final-reconciliation ingredient line for the market anchor."""
+    a = recipe.market_anchor_json if isinstance(recipe.market_anchor_json, dict) else {}
+    keys = {
+        k for k in (a.get("anchor_key"), _ing_key(str(a.get("name") or ""))) if k
+    }
+    for ing in ingredients or []:
+        if not isinstance(ing, dict):
+            continue
+        name = str(ing.get("generic_name") or ing.get("name") or "")
+        k = _ing_key(name)
+        if k and k in keys:
+            return ing
+    a_tokens = set(ingredient_matcher._tokens(str(a.get("name") or "")))
+    if a_tokens:
+        for ing in ingredients or []:
+            if not isinstance(ing, dict):
+                continue
+            t = set(ingredient_matcher._tokens(
+                str(ing.get("generic_name") or ing.get("name") or "")
+            ))
+            if t and (t <= a_tokens or a_tokens <= t):
+                return ing
+    return None
+
+
+def _enforce_badge_integrity(recipe: Recipe, ingredients: list[dict]) -> bool:
+    """P39 B4: the 🏷️ badge and "Built around:" line require the anchor to be
+    an actual PURCHASE (need or partial) in the final reconciliation. An owned
+    anchor keeps the 🏠 pantry framing and its urgency why-line ONLY — badge,
+    anchor line, and price citations are dropped. User-pinned deals are the
+    user's explicit purchase and always keep their badge."""
+    if not recipe.is_market_pick or not isinstance(recipe.market_anchor_json, dict):
+        return False
+    if recipe.market_anchor_json.get("user_pin"):
+        return False
+    line = _anchor_ing_line(recipe, ingredients)
+    if line is None or line.get("in_pantry") is not True:
+        return False  # need or partial -> a real purchase; the badge stands
+    recipe.is_market_pick = False
+    recipe.market_anchor_json = None
+    recipe.why_this_recipe = _strip_price_sentences(recipe.why_this_recipe)
+    recipe.description = _strip_price_sentences(recipe.description)
+    return True
+
+
+def _substantial_protein_qty(ing: dict) -> bool:
+    """≥ 0.5 lb (or the oz/g equivalent), or ≥ 2 count-style servings."""
+    try:
+        q = float(str(ing.get("quantity")))
+    except (TypeError, ValueError):
+        return False
+    unit = str(ing.get("unit") or "").lower().strip().rstrip(".")
+    if "lb" in unit or "pound" in unit:
+        return q >= 0.5
+    if unit in ("oz", "ounce", "ounces"):
+        return q >= 8
+    if unit in ("g", "gram", "grams"):
+        return q >= 225
+    if unit in ("kg",):
+        return q >= 0.25
+    if unit in ("", "each", "count", "piece", "pieces", "breast", "breasts",
+                "thigh", "thighs", "fillet", "fillets", "link", "links",
+                "can", "cans"):
+        return q >= 2
+    return False
+
+
+def _hidden_co_proteins(recipe: Recipe, ingredients: list[dict]) -> list[dict]:
+    """P39 C5: substantial second proteins in the details that the concept's
+    key list never mentioned (the bacon-pinto bake hiding 1.5 lb of chicken)."""
+    key_keys = {
+        _ing_key(str(k.get("generic_name") or ""))
+        for k in (recipe.key_ingredients_json or [])
+        if isinstance(k, dict)
+    }
+    sig = recipe.signature_json if isinstance(recipe.signature_json, dict) else {}
+    a_key = _ing_key(str(sig.get("anchor_ingredient") or ""))
+    out: list[dict] = []
+    for ing in ingredients or []:
+        if not isinstance(ing, dict):
+            continue
+        name = str(ing.get("generic_name") or ing.get("name") or "")
+        k = _ing_key(name)
+        if not name or (k and k in key_keys) or (a_key and k == a_key):
+            continue
+        if _is_protein_ingredient(name) and _substantial_protein_qty(ing):
+            out.append(ing)
+    return out
+
+
+def _disclose_co_proteins(recipe: Recipe, hidden: list[dict]) -> list[str]:
+    """Disclosure over suppression (P39 C6): name the co-protein in the
+    description and add it to the concept key list so the card's ingredient
+    count/cost re-price on the post-detail re-render."""
+    names = [
+        str(i.get("generic_name") or i.get("name") or "").strip() for i in hidden
+    ]
+    hay = f"{recipe.description or ''} {recipe.title or ''}".lower()
+    to_name = [n for n in names if n and n.lower() not in hay]
+    if to_name:
+        desc = (recipe.description or "").rstrip().rstrip(".")
+        joined = " and ".join(to_name)
+        recipe.description = (
+            f"{desc} — plus {joined}." if desc else f"Includes {joined}."
+        )
+    keys = list(recipe.key_ingredients_json or [])
+    key_keys = {
+        _ing_key(str(k.get("generic_name") or ""))
+        for k in keys if isinstance(k, dict)
+    }
+    for ing in hidden:
+        name = str(ing.get("generic_name") or ing.get("name") or "")
+        k = _ing_key(name)
+        if k and k in key_keys:
+            continue
+        keys.append({
+            "generic_name": name,
+            "brand": ing.get("brand"),
+            "in_pantry": ing.get("in_pantry") is True,
+            "on_sale": bool(ing.get("on_sale")),
+            "sale_store": ing.get("sale_store"),
+            "sale_price": ing.get("sale_price"),
+        })
+    recipe.key_ingredients_json = keys
+    return to_name or names
+
+
+def enforce_computed(
+    recipe: Recipe,
+    ingredients: list[dict],
+    protein: float | None,
+    calories: float | None,
+    floor: int,
+    cap: int,
+    daily_target: int,
+) -> dict:
+    """The P39 post-compute annotation pass — deterministic, model-free.
+
+    Runs badge integrity (B4), co-protein disclosure (C5/C6), the
+    prose-nutrition sync (A3), and recomputes the honesty chips (A1) from the
+    AUTHORITATIVE numbers. Returns a summary of what fired; the caller merges
+    pantry-mode extras into the flags and persists them.
+    """
+    summary: dict = {}
+    if _enforce_badge_integrity(recipe, ingredients):
+        summary["badge_dropped"] = True
+    hidden = _hidden_co_proteins(recipe, ingredients)
+    if hidden:
+        summary["co_proteins"] = _disclose_co_proteins(recipe, hidden)
+    n_fixed = _fix_prose_nutrition(recipe, protein, calories)
+    if n_fixed:
+        summary["prose_nutrition_fixed"] = n_fixed
+    summary["flags"] = _quality_flags(protein, calories, floor, cap, daily_target)
+    return summary
+
+
+async def _regen_failed_slot(
+    client: AsyncAnthropic,
+    recipe: Recipe,
+    ctx: _Ctx,
+    protein: float,
+    floor: int,
+    detail_system: list[dict] | str,
+    *,
+    category: str,
+) -> tuple[dict, list[dict], dict | None, float | None, float | None] | None:
+    """P39 A2: a severe computed shortfall regenerates the SLOT once with the
+    computed failure named, then writes details for the replacement concept.
+    Returns (data, ingredients, final_nut, protein, calories) or None when the
+    regeneration didn't come back usable (caller falls through and chips)."""
+    sig = recipe.signature_json if isinstance(recipe.signature_json, dict) else {}
+    brief = {
+        "title": recipe.title,
+        "difficulty": recipe.difficulty,
+        "cuisine": recipe.cuisine,
+        "dish_format": sig.get("dish_format"),
+        "anchor_ingredient": sig.get("anchor_ingredient"),
+        "description": recipe.description,
+        "key_ingredients": [
+            k.get("generic_name")
+            for k in (recipe.key_ingredients_json or [])
+            if isinstance(k, dict)
+        ],
+    }
+    correction = (
+        f"\n\nCORRECTION — COMPUTED PROTEIN FAILURE: USDA-computed nutrition "
+        f"for this dish is {protein:.0f} g protein per serving — "
+        f"{protein:.0f}g computed vs {floor}g floor — this anchor cannot "
+        f"reach it; replace or add a real protein. Seasoning tweaks cannot "
+        f"close a >25% gap: REPLACE the concept with one built around a "
+        f"protein that actually carries the floor. Return ONE replacement "
+        f'concept as JSON {{"recipes":[{{...same shape...}}]}}, SAME '
+        f"difficulty tier ('{recipe.difficulty}')."
+    )
+    msg = (
+        f"{ctx.context_text}{correction}\n\nConcept to replace:\n"
+        f"{json.dumps(brief, ensure_ascii=False)}\n\nReturn the fixed concept now."
+    )
+    data = await _call_json(
+        client, model=settings.recipe_model, max_tokens=_CONCEPT_MAX_TOKENS,
+        system=_cached_system(_CONCEPT_SYSTEM), user_msg=msg,
+        category=category, stage="concept_fix",
+    )
+    recs = data.get("recipes") if isinstance(data, dict) else None
+    if not (isinstance(recs, list) and recs and isinstance(recs[0], dict)):
+        return None
+    c = recs[0]
+    recipe.title = str(c.get("title") or recipe.title)[:255]
+    recipe.description = c.get("description")
+    recipe.why_this_recipe = c.get("why_this_recipe")
+    recipe.cuisine = c.get("cuisine") or None
+    recipe.prep_time_min = _as_int(c.get("prep_time_min")) or recipe.prep_time_min
+    recipe.cook_time_min = _as_int(c.get("cook_time_min")) or recipe.cook_time_min
+    recipe.total_time_min = _as_int(c.get("total_time_min")) or recipe.total_time_min
+    recipe.servings = _as_int(c.get("servings")) or recipe.servings
+    recipe.tags = c.get("tags") or recipe.tags
+    recipe.key_ingredients_json = [
+        _reconcile_key(k, ctx.deal_by_ingredient, ctx.chain_name)
+        for k in (c.get("key_ingredients") or [])
+        if isinstance(k, dict)
+    ]
+    recipe.signature_json = {
+        "anchor_ingredient": c.get("anchor_ingredient"),
+        "dish_format": c.get("dish_format"),
+        "cuisine": recipe.cuisine,
+        "flavor_lead": _flavor_leads(c) or None,
+    }
+    # The failed concept's market badge dies with it — the replacement is a
+    # fresh dish; persist-time matching doesn't re-run at detail stage.
+    recipe.is_market_pick = False
+    recipe.market_anchor_json = None
+    ctx.batch_titles[recipe.id] = recipe.title
+    logger.warning(
+        "Slot regenerated on computed shortfall: %r -> %r (%.0fg vs %dg floor)",
+        brief["title"], recipe.title, protein, floor,
+    )
+    detail = await _call_json(
+        client, model=settings.detail_model, max_tokens=_DETAIL_MAX_TOKENS,
+        system=detail_system, user_msg=_detail_user_msg(recipe, ctx),
+        category=category, stage="detail_fix",
+    )
+    d = detail if isinstance(detail, dict) else {}
+    ings, model_nut, computed = _reconcile_and_compute(d, recipe, ctx)
+    final_nut, new_protein = _effective_nutrition(model_nut, computed)
+    return d, ings, final_nut, new_protein, _calories_of(final_nut)
 
 
 async def _fill_details(
@@ -4040,6 +4409,31 @@ async def _fill_details(
         final_nut, protein = _effective_nutrition(model_nut, computed)
         calories = _calories_of(final_nut)
 
+        # P39 A2: a COMPUTED protein more than 25% under the floor is a failed
+        # concept, not a chip case — regenerate the slot once with the computed
+        # shortfall named. Pantry mode is exempt (no purchase can fix it there;
+        # P35's chip + cheapest-fix stays the honest answer), as are
+        # user-pinned anchors (the pin is the user's explicit choice).
+        severe = (
+            floor > 0
+            and protein is not None
+            and (final_nut or {}).get("source") == "calculated"
+            and protein < floor * (1 - _SEVERE_SHORTFALL_PCT)
+            and not ctx.pantry_mode
+            and not (
+                isinstance(recipe.market_anchor_json, dict)
+                and recipe.market_anchor_json.get("user_pin")
+            )
+        )
+        if severe:
+            regen = await _regen_failed_slot(
+                client, recipe, ctx, protein, floor, detail_system,
+                category=category,
+            )
+            if regen is not None:
+                data, ingredients, final_nut, protein, calories = regen
+            # Post-regeneration survivors chip below, exactly like today.
+
         # Floor + calorie-band validation on the AUTHORITATIVE figures — the
         # computed (USDA) numbers when coverage is high enough, else the model's
         # estimate. One corrective regeneration; the retry only wins if it
@@ -4053,6 +4447,10 @@ async def _fill_details(
         purchase_reason = (
             _purchase_violation(purchases, anchor_name) if ctx.pantry_mode else None
         )
+        if severe and viol_protein:
+            # The slot already burned its one regeneration; don't stack the
+            # mild fortify retry on top — it ships with the honest chip.
+            viol_protein = False
         if viol_protein or viol_cal or purchase_reason:
             src = (final_nut or {}).get("source", "est")
             correction = ""
@@ -4115,10 +4513,41 @@ async def _fill_details(
                         recipe.title = new_title[:255]
                         ctx.batch_titles[recipe.id] = recipe.title
 
-        # Honesty flags (P32 C6/C7, P35 B4/B5): a recipe that still lands below
-        # the floor, above the calorie band, or over the pantry-mode purchase
+        # Persist the final content FIRST — the enforcement pass edits the
+        # recipe's own fields (instructions included), so it must see the
+        # detail-stage text, not the concept leftovers.
+        recipe.ingredients_json = ingredients
+        instructions = data.get("instructions") if isinstance(data, dict) else None
+        recipe.instructions_json = instructions or recipe.instructions_json or []
+        if final_nut:
+            recipe.nutrition_json = final_nut
+
+        # P39 post-compute enforcement: badge integrity, co-protein disclosure,
+        # prose-nutrition sync, and honesty flags (P32 C6/C7, P35 B4/B5) — all
+        # re-run on the COMPUTED numbers. A recipe that still lands below the
+        # floor, above the calorie band, or over the pantry-mode purchase
         # budget ships ONLY with a visible amber chip.
-        flags = _quality_flags(protein, calories, floor, cap, ctx.calorie_target)
+        enf = enforce_computed(
+            recipe, ingredients, protein, calories, floor, cap, ctx.calorie_target
+        )
+        if enf.get("badge_dropped"):
+            logger.warning(
+                "Badge integrity (P39 B4): %r anchor is OWNED in the final "
+                "reconciliation — market badge + price citations dropped.",
+                recipe.title,
+            )
+        if enf.get("co_proteins"):
+            logger.warning(
+                "Co-protein disclosure (P39 C5): %r now names %s.",
+                recipe.title, enf["co_proteins"],
+            )
+        if enf.get("prose_nutrition_fixed"):
+            logger.warning(
+                "Prose nutrition sync (P39 A3): %r had %d figure(s) rewritten "
+                "to the computed panel.",
+                recipe.title, enf["prose_nutrition_fixed"],
+            )
+        flags = enf["flags"]
         if purchase_reason:
             flags = dict(flags or {})
             flags["purchases"] = {"count": len(purchases), "items": purchases[:4]}
@@ -4136,11 +4565,6 @@ async def _fill_details(
                 recipe.id, recipe.title, flags, (final_nut or {}).get("source", "?"),
             )
 
-        recipe.ingredients_json = ingredients
-        instructions = data.get("instructions") if isinstance(data, dict) else None
-        recipe.instructions_json = instructions or recipe.instructions_json or []
-        if final_nut:
-            recipe.nutrition_json = final_nut
         recipe.ai_model = settings.detail_model
         recipe.status = "ready"
 

@@ -161,7 +161,7 @@ anchor prominence: 4/4 market picks star (anchor in title or description lead)
 hyphen/accent tokenization: 'Sazón-Charred' counts 'charred': YES
 
 ============================================================================
-MINI-CHECKS (P34 verify-2/3) — use_soon at N=3, then beef consumed
+MINI-CHECKS — P34 use_soon/consumed · P37 deal pin · P35 pantry mode · starvation
 ============================================================================
 use_soon @ N=3: batch = 3 concepts (2 market picks); beef-anchored non-market: 1
   #1 Seared Beef & Green Beans Stir-Fry
@@ -170,6 +170,17 @@ beef consumed @ N=5: batch = 5 concepts (5 market picks); FORCED beef slot: 0 (g
 deal pin @ N=5 (pinned: 'Fresh Boneless Skinless Chicken Breast Family Pack' + pantry 'cherry tomatoes'):
   anchoring concept: 'Chicken Breast Casserole Night' — badge=True, built around chicken breast $1.99/lb (user_pin=True)
   featured in 5/5 recipes; batch chip: Chicken Breast $1.99/lb — your pick
+pantry mode ON @ N=5: market picks: 0 (slots suspended); pantry_mode column on all rows: YES
+  #1 Beef Picadillo Rice Skillet — anchor='ground beef', purchases: 0
+  #2 Smoky Black Bean Chili — anchor='canned black beans', purchases: 0
+  #3 Creamy Chickpea & Spinach Curry — anchor='canned chickpeas', purchases: 0
+  #4 Broccoli Cheddar Rice Bake — anchor='broccoli', purchases: 0
+  #5 Charred Zucchini & Feta Melt — anchor='zucchini', purchases: 2 ['feta cheese', 'asparagus']  ⚠ needs 2 purchases: feta cheese, asparagus
+  purchased anchors: 0; salmon violator regenerated (named), survivor's 2-buy chip shown above
+  warm cache: _last_pantry_mode -> True (pre-gen would re-run in pantry mode)
+  floor stress ('Smoky Black Bean Chili' detailed, 0 purchases): protein 37g < floor 54g
+    chip + note: "hits 54g with one buy: Chicken Breast, $1.99/lb at Lidl" (informative — never auto-added)
+pantry mode OFF @ N=5: market picks restored: 4; pantry_mode column: all false
 deals starved @ N=5 (flyers wiped; stub proposes the live ALL-BEEF batch — 5× ground beef, formats/cuisines rotated):
   anchors shipped: ['ground beef', 'rigatoni', 'canned black beans', 'baby potatoes', 'broccoli']
   beef-anchored: 1 (one anchor, one dish); anchors distinct: YES; market picks: 0

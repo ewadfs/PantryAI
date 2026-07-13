@@ -15,6 +15,7 @@ export const generateRecipes = (
   direction?: string | null,
   difficulties: Difficulty[] = [],
   pinnedDealIds: number[] = [],
+  pantryMode = false,
 ) =>
   apiFetch<GenerateResponse>("/api/v1/recipes/generate", {
     method: "POST",
@@ -24,6 +25,7 @@ export const generateRecipes = (
       ...(direction && direction.trim() ? { direction: direction.trim() } : {}),
       // Omit when all three selected — server treats empty as "all".
       ...(difficulties.length && difficulties.length < 3 ? { difficulties } : {}),
+      ...(pantryMode ? { pantry_mode: true } : {}),
     },
   });
 

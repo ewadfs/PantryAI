@@ -30,6 +30,9 @@ _cache: list[dict] | None = None
 # Ingredient ids flagged is_pantry_staple (salt, oils, basic spices…) —
 # excluded from ingredient-overlap variety math (Prompt 33 A1).
 _staple_ids: set[int] = set()
+# id -> master category (pantry-mode purchase rules need to know whether a
+# purchased line is a protein, Prompt 35 B3).
+_categories: dict[int, str] = {}
 
 _TOKEN_RE = re.compile(r"[a-z0-9]+")
 _ACCEPT_THRESHOLD = 0.5
@@ -134,14 +137,17 @@ async def preload(db: AsyncSession) -> None:
                 IngredientMaster.display_name,
                 IngredientMaster.common_aliases,
                 IngredientMaster.is_pantry_staple,
+                IngredientMaster.category,
             )
         )
     ).all()
 
     cache: list[dict] = []
-    for id_, canonical, display, aliases, is_staple in rows:
+    for id_, canonical, display, aliases, is_staple, category in rows:
         if is_staple:
             _staple_ids.add(id_)
+        if category:
+            _categories[id_] = category
         aliases = aliases or []
         exact = {_norm(canonical)}
         if display:
@@ -167,12 +173,20 @@ def _reset() -> None:
     global _cache
     _cache = None
     _staple_ids.clear()
+    _categories.clear()
 
 
 def is_staple_id(ingredient_id: int | None) -> bool:
     """Is this ingredient_master row flagged is_pantry_staple? Requires
     :func:`preload`."""
     return ingredient_id is not None and ingredient_id in _staple_ids
+
+
+def category_of(ingredient_id: int | None) -> str | None:
+    """Master category for an ingredient id (requires :func:`preload`)."""
+    if ingredient_id is None:
+        return None
+    return _categories.get(ingredient_id)
 
 
 def match_ingredient(name: str) -> tuple[int | None, float]:

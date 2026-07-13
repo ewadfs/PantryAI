@@ -8,6 +8,7 @@ import {
   MarketPickBadge,
   PantryLine,
   QualityChips,
+  cheapestFixLine,
   marketAnchorLine,
   metaLine,
   nutritionLine,
@@ -45,6 +46,9 @@ export default function RecipeCard({
 
       {marketAnchorLine(recipe) && (
         <p className="mt-1 text-sm font-medium text-warn">{marketAnchorLine(recipe)}</p>
+      )}
+      {cheapestFixLine(recipe) && (
+        <p className="mt-1 text-xs text-ink-soft">💡 {cheapestFixLine(recipe)}</p>
       )}
       <p className="mt-1 text-sm text-ink-soft">{metaLine(recipe)}</p>
       {nutritionLine(recipe) && (

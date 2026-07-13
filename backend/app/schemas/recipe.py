@@ -85,11 +85,25 @@ class MarketAnchor(BaseModel):
     user_pin: bool = False
 
 
+class CheapestFix(BaseModel):
+    """One-line informative fix for a sub-floor pantry-mode recipe (Prompt 35
+    B5): the cheapest current protein deal that would clear the floor. Never
+    auto-added to the recipe."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    name: str
+    price: Decimal | None = None
+    unit: str | None = None
+    store: str | None = None
+
+
 class ProteinBelowFloorFlag(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     protein_g: float
     floor_g: float
+    cheapest_fix: CheapestFix | None = None
 
 
 class HeavyFlag(BaseModel):
@@ -100,6 +114,16 @@ class HeavyFlag(BaseModel):
     daily_target: float | None = None
 
 
+class PurchasesFlag(BaseModel):
+    """Pantry-mode budget disclosure (Prompt 35 B4): a survivor over the
+    purchase cap ships only with this amber chip."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    count: int
+    items: list[str] = Field(default_factory=list)
+
+
 class QualityFlags(BaseModel):
     """Honesty flags (Prompt 32 C): a recipe below the protein floor or above
     the calorie band ships ONLY with these, rendered as amber chips."""
@@ -108,6 +132,7 @@ class QualityFlags(BaseModel):
 
     protein_below_floor: ProteinBelowFloorFlag | None = None
     heavy: HeavyFlag | None = None
+    purchases: PurchasesFlag | None = None
 
 
 class RecipeRead(BaseModel):
@@ -149,6 +174,9 @@ class GenerateRequest(BaseModel):
     direction: str | None = Field(default=None, max_length=200)
     # Which difficulty tiers to draw from. Empty (or omitted) means all three.
     difficulties: list[Literal["easy", "medium", "hard"]] = Field(default_factory=list)
+    # Pantry mode (Prompt 35): cook from what's owned — market slots suspended,
+    # at most one minor purchased ingredient per recipe (pinned deals excepted).
+    pantry_mode: bool = False
 
     @field_validator("difficulties")
     @classmethod
@@ -174,6 +202,7 @@ class LatestResponse(BaseModel):
     pinned: list[str] = Field(default_factory=list)
     direction: str | None = None
     difficulties: list[str] = Field(default_factory=list)
+    pantry_mode: bool = False
     recipes: list[RecipeRead]
 
 

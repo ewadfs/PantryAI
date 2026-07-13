@@ -9,6 +9,7 @@ import {
   DifficultyPill,
   MarketPickBadge,
   QualityChips,
+  cheapestFixLine,
   marketAnchorLine,
   metaLine,
   nutritionLine,
@@ -214,6 +215,9 @@ export default function RecipeSheet({
           <h2 className="mt-2 text-2xl font-bold text-ink">{data.title}</h2>
           {marketAnchorLine(data) && (
             <p className="mt-1 text-sm font-medium text-warn">{marketAnchorLine(data)}</p>
+          )}
+          {cheapestFixLine(data) && (
+            <p className="mt-1 text-xs text-ink-soft">💡 {cheapestFixLine(data)}</p>
           )}
           <p className="mt-1 text-sm text-ink-soft">{metaLine(data)}</p>
           {nutritionLine(data) && (

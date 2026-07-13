@@ -53,6 +53,11 @@ class Recipe(Base):
     # Difficulty tiers this batch was drawn from (subset of easy/medium/hard).
     # NULL means all three; persisted so warm-cache + /latest can reuse it.
     difficulties: Mapped[list[str] | None] = mapped_column(ARRAY(Text))
+    # Pantry mode (Prompt 35): this batch was generated under the
+    # minimize-buying switch (no market slots, ≤1 minor purchase per recipe).
+    pantry_mode: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=text("false")
+    )
     ai_model: Mapped[str | None] = mapped_column(String(50))
     # Critic pass (Stage 1.5): {score, worst_issues, verdict, fail_rubrics, regenerated}.
     critic_json: Mapped[dict | list | None] = mapped_column(JSONB)

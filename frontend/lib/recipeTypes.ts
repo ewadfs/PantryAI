@@ -50,11 +50,26 @@ export type MarketAnchor = {
   cross_store?: boolean;
 };
 
-// Honesty flags: a recipe below the protein floor or above the calorie band
-// ships ONLY with these, rendered as amber chips on card and detail.
+// The cheapest current protein deal that would clear a sub-floor pantry-mode
+// recipe (informative one-liner — never auto-added to the recipe).
+export type CheapestFix = {
+  name: string;
+  price: string | number | null;
+  unit: string | null;
+  store: string | null;
+};
+
+// Honesty flags: a recipe below the protein floor, above the calorie band, or
+// over the pantry-mode purchase cap ships ONLY with these, rendered as amber
+// chips on card and detail.
 export type QualityFlags = {
-  protein_below_floor?: { protein_g: number; floor_g: number } | null;
+  protein_below_floor?: {
+    protein_g: number;
+    floor_g: number;
+    cheapest_fix?: CheapestFix | null;
+  } | null;
   heavy?: { calories: number; cap: number; daily_target?: number | null } | null;
+  purchases?: { count: number; items: string[] } | null;
 } | null;
 
 export type Recipe = {
@@ -90,6 +105,7 @@ export type LatestResponse = {
   pinned: string[];
   direction: string | null;
   difficulties: string[];
+  pantry_mode: boolean;
   recipes: Recipe[];
 };
 

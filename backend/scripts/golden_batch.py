@@ -295,6 +295,8 @@ class _StubMessages:
             return _msg(self._detail(user, sys_text))
         if "edit one short recipe sentence" in sys_text:
             return _msg(self._price_edit(user))
+        if "CORRECTION — PANTRY MODE BUDGET" in user:
+            return _msg({"recipes": [self._pantry_budget_regen()]})
         if "ANCHOR PROMINENCE VIOLATION" in user:
             return _msg({"recipes": [self._prominence_regen(user)]})
         if "ANCHOR CAP VIOLATION" in user:
@@ -305,6 +307,8 @@ class _StubMessages:
             return _msg({"recipes": [self._variety_regen(user)]})
         if "MARKET ANCHOR COLLISION" in user:
             return _msg({"recipes": [self._market_concept_from_correction(user)]})
+        if "PANTRY MODE IS ON" in user and "Propose tonight's" in user:
+            return _msg(self._pantry_mode_concepts(user))
         if "Propose tonight's" in user:
             return _msg(self._concepts(user))
         # variety / contract / critic regen fallbacks: echo one safe concept
@@ -721,6 +725,88 @@ class _StubMessages:
             ],
         }
 
+    # -- Pantry mode (P35) --------------------------------------------------- #
+    @staticmethod
+    def _owned_concept(title, desc, tier, anchor, fmt, cuisine, lead, keys,
+                       unowned=()) -> dict:
+        return {
+            "title": title, "description": desc, "difficulty": tier,
+            "prep_time_min": 10, "cook_time_min": 25, "total_time_min": 35,
+            "servings": 2,
+            "why_this_recipe": "Cooked from what's already in your kitchen.",
+            "cuisine": cuisine, "dish_format": fmt,
+            "anchor_ingredient": anchor, "flavor_lead": lead,
+            "market_pick": False, "tags": ["pantry-first"],
+            "nutrition_per_serving": {"calories": 640, "protein_g": 55},
+            "key_ingredients": [
+                {"generic_name": k, "brand": None, "in_pantry": k not in unowned,
+                 "on_sale": False, "sale_price": None}
+                for k in keys
+            ],
+        }
+
+    def _pantry_mode_concepts(self, user: str) -> dict:
+        """Pantry-mode Stage 1: no market assignments arrive (slots are
+        suspended); four clean all-pantry dishes honor the block, but — like a
+        live model would — one concept ignores it and builds a salmon dinner
+        the user would have to shop for. The engine's deterministic budget
+        pass must catch it."""
+        n = int(re.search(r"propose exactly (\d+) concepts", user).group(1))
+        per = re.search(
+            r"OWNED-PERISHABLE SLOT — the user already owns (.+?) \(HAVE", user
+        )
+        per_name = per.group(1).strip() if per else "ground beef"
+        recipes = [
+            self._owned_concept(
+                "Beef Picadillo Rice Skillet",
+                "Savory-sweet picadillo over rice.", "easy",
+                per_name, "skillet", "cuban", ["cumin-cinnamon picadillo"],
+                [per_name, "white rice", "tomato", "red onion"],
+            ),
+            self._owned_concept(
+                "Smoky Black Bean Chili",
+                "Thick chipotle bean chili from cans and the crisper.",
+                "easy", "canned black beans", "stew", "tex-mex",
+                ["chipotle-cumin"],
+                ["canned black beans", "canned diced tomatoes", "yellow onion",
+                 "chipotle peppers in adobo"],
+            ),
+            self._owned_concept(
+                "Creamy Chickpea & Spinach Curry",
+                "Coconut-simmered chickpeas with wilted spinach.", "medium",
+                "canned chickpeas", "curry", "thai", ["coconut-ginger"],
+                ["canned chickpeas", "spinach", "coconut milk", "ginger"],
+            ),
+            self._owned_concept(
+                "Broccoli Cheddar Rice Bake",
+                "Bubbling cheddar rice with charred broccoli.", "medium",
+                "broccoli", "bake", "american", ["cheddar-mustard"],
+                ["broccoli", "cheddar cheese", "white rice", "yellow onion"],
+            ),
+            # The violator: a purchased-protein anchor plus a second buy —
+            # the deterministic budget pass must regenerate it ONCE, named.
+            self._owned_concept(
+                "Pan-Seared Salmon with Asparagus",
+                "Restaurant-style salmon dinner.", "hard",
+                "salmon", "pan-sear", "french", ["caper-brown butter"],
+                ["salmon", "asparagus", "white rice", "olive oil"],
+                unowned=("salmon", "asparagus"),
+            ),
+        ]
+        return {"recipes": recipes[:n]}
+
+    def _pantry_budget_regen(self) -> dict:
+        """The budget-regen answer swaps the salmon for an owned anchor but —
+        still like a live model — sneaks in two minor buys. The survivor must
+        ship with the amber 'needs 2 purchases' chip, never silently."""
+        return self._owned_concept(
+            "Charred Zucchini & Feta Melt",
+            "Blistered zucchini under briny feta.", "hard",
+            "zucchini", "roast", "mediterranean", ["lemon-feta"],
+            ["zucchini", "feta cheese", "asparagus", "olive oil"],
+            unowned=("feta cheese", "asparagus"),
+        )
+
     def _market_concept_from_correction(self, user: str) -> dict:
         m = re.search(r"assigned deal instead: (.+?): \$([0-9.]+)", user)
         clean = ingredient_matcher.normalize_flyer_name(m.group(1)) if m else "salmon"
@@ -768,6 +854,8 @@ class _StubMessages:
 
         if "tortilla" in keys:
             out = self._taco_detail(trimmed=wants_rebalance)
+        elif "black bean" in keys and "beef" not in keys:
+            out = self._chili_detail(fortified=wants_protein)
         elif "green beans" in keys and "beef" in keys:
             out = self._stirfry_detail()
         elif "cauliflower" in keys:
@@ -816,6 +904,40 @@ class _StubMessages:
             "nutrition_per_serving": {"calories": 1104, "protein_g": 62,
                                       "carbs_g": 48, "fat_g": 70, "fiber_g": 4},
         }
+
+    def _chili_detail(self, fortified: bool) -> dict:
+        """Pantry-mode floor stress (P35 B5): an all-owned bean chili that
+        can't reach the 54 g floor. The fortify retry COMBINES pantry sources
+        (yogurt + quinoa) instead of buying — still short, so the engine must
+        ship the sub-floor chip WITH the cheapest one-buy fix note."""
+        ings = [
+            self._ing("canned black beans", "2", "cans", in_pantry=True),
+            self._ing("canned diced tomatoes", "1", "can", in_pantry=True),
+            self._ing("yellow onion", "1", "each", in_pantry=True),
+            self._ing("chipotle peppers in adobo", "2", "tbsp", in_pantry=True),
+        ]
+        out = {
+            "ingredients": ings,
+            "instructions": [
+                "Sweat the onion; bloom the chipotle and spices.",
+                "Add beans and tomatoes; simmer until thick.",
+                "Finish with lime and serve.",
+            ],
+            "nutrition_per_serving": {"calories": 520, "protein_g": 24,
+                                      "carbs_g": 82, "fat_g": 9, "fiber_g": 22},
+        }
+        if fortified:
+            out["ingredients"] = ings + [
+                self._ing("greek yogurt", "1", "cup", in_pantry=True),
+                self._ing("quinoa", "0.75", "cup", in_pantry=True),
+            ]
+            out["instructions"].insert(
+                2, "Stir in quinoa to simmer; finish with yogurt."
+            )
+            out["nutrition_per_serving"] = {"calories": 610, "protein_g": 38,
+                                            "carbs_g": 96, "fat_g": 12,
+                                            "fiber_g": 24}
+        return out
 
     def _stirfry_detail(self) -> dict:
         return {
@@ -1095,8 +1217,17 @@ def _fmt_flags(f: dict | None) -> str:
     if f.get("protein_below_floor"):
         d = f["protein_below_floor"]
         parts.append(f"⚠ {d['protein_g']}g protein — below your {d['floor_g']}g target")
+        fix = d.get("cheapest_fix")
+        if fix:
+            parts.append(
+                f"💡 hits {d['floor_g']}g with one buy: {fix['name']}, "
+                f"${fix['price']} at {fix['store']}"
+            )
     if f.get("heavy"):
         parts.append(f"⚠ heavy: {f['heavy']['calories']} cal")
+    if f.get("purchases"):
+        p = f["purchases"]
+        parts.append(f"⚠ needs {p['count']} purchases: {', '.join(p['items'])}")
     return "; ".join(parts)
 
 
@@ -1393,12 +1524,16 @@ async def clone_check() -> None:
 
 
 async def mini_checks() -> None:
-    """P34 verify-2/3: (a) a use_soon perishable gets the guarantee at N=3
-    with the urgency why-line; (b) once the beef is consumed, the next batch
-    has no forced beef slot. Concept-stage only; reuses the Lidl fixture user
+    """P34 verify-2/3 + P37 deal pin + P35 pantry mode: (a) a use_soon
+    perishable gets the guarantee at N=3 with the urgency why-line; (b) once
+    the beef is consumed, the next batch has no forced beef slot; (d) a
+    pinned deal anchors + rides every recipe; (e) pantry mode suspends market
+    slots, enforces the purchase budget, and floor-stresses the chip +
+    cheapest-fix note; then deals starvation. Reuses the Lidl fixture user
     (whom the main run just seeded)."""
     print("=" * 76)
-    print("MINI-CHECKS (P34 verify-2/3) — use_soon at N=3, then beef consumed")
+    print("MINI-CHECKS — P34 use_soon/consumed · P37 deal pin · P35 pantry "
+          "mode · starvation")
     print("=" * 76)
     async with AsyncSessionLocal() as db:
         user = (
@@ -1517,6 +1652,78 @@ async def mini_checks() -> None:
               f"batch chip: {labels[0]['name']} ${labels[0]['sale_price']}"
               f"/{labels[0]['price_unit']} — your pick" if labels else
               "  batch chip: MISSING")
+
+        # (e) PANTRY MODE (P35): market slots suspended; ≤1 minor purchase
+        # per recipe, never a purchased anchor or protein. The stub proposes
+        # four clean pantry dishes + one salmon-dinner violator; the engine's
+        # deterministic budget pass regenerates it ONCE — the regen still
+        # sneaks in two minor buys, so it ships with the amber chip.
+        pm_concepts = await recipe_engine.generate_concepts(
+            db, user, pantry_mode=True,
+        )
+        await db.commit()
+        markets = sum(1 for r in pm_concepts if r.is_market_pick)
+        col_ok = all(r.pantry_mode for r in pm_concepts)
+        print(f"pantry mode ON @ N=5: market picks: {markets} (slots "
+              f"suspended); pantry_mode column on all rows: "
+              f"{'YES' if col_ok else 'NO'}")
+        for i, r in enumerate(pm_concepts, 1):
+            sig = r.signature_json or {}
+            unowned = [
+                str(k.get("generic_name"))
+                for k in (r.key_ingredients_json or [])
+                if isinstance(k, dict) and not k.get("in_pantry")
+                and not k.get("on_sale")
+            ]
+            print(f"  #{i} {r.title} — anchor="
+                  f"{sig.get('anchor_ingredient')!r}, purchases: "
+                  f"{len(unowned)}{' ' + str(unowned) if unowned else ''}"
+                  f"{'  ' + _fmt_flags(r.quality_flags_json) if r.quality_flags_json else ''}")
+        purchased_anchor = sum(
+            1 for r in pm_concepts
+            if not any(
+                str((r.signature_json or {}).get("anchor_ingredient") or "!")
+                in str(k.get("generic_name") or "").lower()
+                and k.get("in_pantry")
+                for k in (r.key_ingredients_json or [])
+                if isinstance(k, dict)
+            )
+        )
+        print(f"  purchased anchors: {purchased_anchor}; salmon violator "
+              f"regenerated (named), survivor's 2-buy chip shown above")
+        last_pm = await recipe_engine._last_pantry_mode(db, user.id)
+        print(f"  warm cache: _last_pantry_mode -> {last_pm} (pre-gen would "
+              f"re-run in pantry mode)")
+
+        # Floor stress (P35 B5): detail the all-owned chili — fortify retry
+        # COMBINES pantry sources (yogurt + quinoa), still short of 54 g ->
+        # sub-floor chip PLUS the informative cheapest one-buy fix.
+        chili = next(r for r in pm_concepts if "Chili" in r.title)
+        await recipe_engine.run_details_bg(user.id, [chili.id])
+        await db.refresh(chili)
+        pf = (chili.quality_flags_json or {}).get("protein_below_floor") or {}
+        fix = pf.get("cheapest_fix")
+        n_purch = sum(
+            1 for ing in (chili.ingredients_json or [])
+            if isinstance(ing, dict) and not ing.get("in_pantry")
+        )
+        print(f"  floor stress ('{chili.title}' detailed, {n_purch} purchases): "
+              f"protein {pf.get('protein_g')}g < floor {pf.get('floor_g')}g")
+        if fix:
+            print(f"    chip + note: \"hits {pf.get('floor_g'):.0f}g with one "
+                  f"buy: {fix['name']}, ${fix['price']}"
+                  f"{'/' + fix['unit'] if fix.get('unit') else ''} at "
+                  f"{fix['store']}\" (informative — never auto-added)")
+        else:
+            print("    cheapest_fix: MISSING!")
+
+        # Toggle OFF -> exactly the old behavior: market picks come back.
+        off_concepts = await recipe_engine.generate_concepts(db, user)
+        await db.commit()
+        markets_off = sum(1 for r in off_concepts if r.is_market_pick)
+        print(f"pantry mode OFF @ N=5: market picks restored: {markets_off}; "
+              f"pantry_mode column: "
+              f"{'all false' if not any(r.pantry_mode for r in off_concepts) else 'STUCK ON'}")
 
         # (c) DEALS STARVATION -> anchor cap (the live all-beef regression).
         # Wipe every golden flyer AND the fetch history (so the self-heal

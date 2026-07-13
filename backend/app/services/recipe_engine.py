@@ -848,6 +848,213 @@ async def _enforce_deal_pin_slots(
 
 
 # --------------------------------------------------------------------------- #
+# Pantry mode — "cook from what I have" as an ENFORCED switch (Prompt 35)
+# --------------------------------------------------------------------------- #
+# Hard cap: at most this many purchased ingredients per recipe in pantry mode
+# (0 preferred), and a purchase may never be the anchor or a protein.
+PANTRY_MODE_PURCHASE_CAP = 1
+
+_PROTEIN_NAME_TOKENS = {
+    "chicken", "beef", "pork", "salmon", "shrimp", "fish", "turkey", "lamb",
+    "steak", "cod", "tilapia", "tuna", "tofu", "tempeh", "sausage", "bacon",
+    "scallop", "crab", "lobster", "duck",
+}
+
+
+def _is_protein_ingredient(name: str) -> bool:
+    iid, _c = ingredient_matcher.match_ingredient(name or "")
+    cat = ingredient_matcher.category_of(iid)
+    if cat in {"meat", "seafood"}:
+        return True
+    return bool(set(ingredient_matcher._tokens(name or "")) & _PROTEIN_NAME_TOKENS)
+
+
+def _owned(name: str, ctx: _Ctx) -> PantryItem | None:
+    iid, _c = ingredient_matcher.match_ingredient(name or "")
+    return (
+        ctx.pantry_by_iid.get(iid) if iid is not None else None
+    ) or ctx.pantry_by_norm.get(ingredient_matcher._norm(name or ""))
+
+
+def _purchases_of(names: list[str], ctx: _Ctx) -> list[str]:
+    """Names the user would have to BUY: not owned, not an assumed staple, and
+    not an exempt pinned deal (P37: an explicit user-chosen purchase overrides
+    the cap for that item alone)."""
+    out: list[str] = []
+    for name in names:
+        if not str(name or "").strip():
+            continue
+        key = _ing_key(name)
+        if key is not None and key in ctx.deal_pin_keys:
+            continue
+        if _is_staple_name(name, key):
+            continue
+        if _owned(name, ctx) is None:
+            out.append(str(name))
+    return out
+
+
+def _detail_purchases(ingredients: list[dict], ctx: _Ctx) -> list[str]:
+    """Purchase lines in a RECONCILED detail list: unowned lines plus partial
+    shortfalls (owning half the rigatoni still means buying rigatoni)."""
+    out: list[str] = []
+    for ing in ingredients:
+        if not isinstance(ing, dict):
+            continue
+        name = str(ing.get("generic_name") or ing.get("name") or "").strip()
+        if not name:
+            continue
+        key = _ing_key(name)
+        if key is not None and key in ctx.deal_pin_keys:
+            continue
+        if _is_staple_name(name, key):
+            continue
+        if _owned(name, ctx) is None or ing.get("in_pantry") == "partial":
+            out.append(name)
+    return out
+
+
+def _purchase_violation(purchases: list[str], anchor_name: str) -> str | None:
+    """The pantry-mode budget rule (P35 B3/B4): >1 purchase, or ANY purchased
+    anchor/protein, is a violation. Returns the reason or None."""
+    if not purchases:
+        return None
+    a_tokens = set(ingredient_matcher._tokens(anchor_name or ""))
+    for p in purchases:
+        p_tokens = set(ingredient_matcher._tokens(p))
+        if a_tokens and p_tokens and (
+            p_tokens <= a_tokens or a_tokens <= p_tokens
+            or len(a_tokens & p_tokens) / len(a_tokens | p_tokens) >= 0.5
+        ):
+            return f"the ANCHOR ({p}) would have to be purchased"
+        if _is_protein_ingredient(p):
+            return f"a purchased PROTEIN ({p})"
+    if len(purchases) > PANTRY_MODE_PURCHASE_CAP:
+        return (f"{len(purchases)} purchased ingredients "
+                f"({', '.join(purchases[:4])}) — the cap is "
+                f"{PANTRY_MODE_PURCHASE_CAP}, and 0 is preferred")
+    return None
+
+
+def _pantry_mode_block() -> str:
+    return (
+        "\n\nPANTRY MODE IS ON — the user asked to cook from what they have "
+        "and minimize buying. HARD RULES for every concept:\n"
+        "- 0 purchased ingredients preferred; ABSOLUTE CAP of "
+        f"{PANTRY_MODE_PURCHASE_CAP} purchased ingredient per recipe, and it "
+        "must be a minor supporting item — NEVER the anchor, NEVER a protein.\n"
+        "- Anchors and proteins come from THEIR KITCHEN only.\n"
+        "- To reach the protein floor, COMBINE pantry sources: eggs + legumes "
+        "+ grains + canned fish + dairy stack up (e.g. a chickpea-egg-yogurt "
+        "bowl). Combining beats buying.\n"
+        "- Exception: a USER-PINNED DEAL is an explicit purchase the user "
+        "chose — it does not count against the cap."
+    )
+
+
+def _purchase_correction(purchases: list[str], reason: str) -> str:
+    return (
+        f"\n\nCORRECTION — PANTRY MODE BUDGET: this recipe requires buying "
+        f"{reason}. The user asked to cook from what they have: rework it "
+        "using ONLY ingredients in THEIR KITCHEN (assumed staples are fine), "
+        f"with at most {PANTRY_MODE_PURCHASE_CAP} minor supporting purchase — "
+        "never the anchor, never a protein. Swap purchased items for owned "
+        "equivalents or drop them; fortify protein by combining pantry "
+        "sources (eggs, legumes, grains, canned fish, dairy)."
+    )
+
+
+def _cheapest_protein_fix(ctx: _Ctx) -> dict | None:
+    """The one-buy fix for an unreachable floor (P35 B5): the cheapest current
+    protein deal across the batch's store set. Informative only — never
+    auto-added to a recipe."""
+    best: tuple[float, DealCache, str | None] | None = None
+    pools = [(ctx.chain_name, ctx.all_deals)] + list(ctx.other_store_deals)
+    for store, deals in pools:
+        for d in deals:
+            if (d.category or "").lower() not in {"meat", "seafood"}:
+                continue
+            if d.sale_price is None or _NON_ANCHOR_RE.search(d.product_name or ""):
+                continue
+            price = float(d.sale_price)
+            if best is None or price < best[0]:
+                best = (price, d, store)
+    if best is None:
+        return None
+    _price, d, store = best
+    return {
+        "name": ingredient_matcher.normalize_flyer_name(d.product_name or "", d.brand)
+        or d.product_name,
+        "price": str(d.sale_price),
+        "unit": d.price_unit,
+        "store": store,
+    }
+
+
+async def _enforce_pantry_budget(
+    client: AsyncAnthropic,
+    concepts: list[dict],
+    ctx: _Ctx,
+    base_system: list[dict] | str,
+    ctx_text: str,
+) -> list[dict]:
+    """Deterministic Stage-1 purchase budget (P35 B4): count unowned key
+    ingredients per concept; violations regenerate once with the violation
+    NAMED; survivors ship only with the amber 'needs N purchases' chip
+    (applied at persist). Never silently."""
+    idxs: list[tuple[int, str]] = []
+    for i, c in enumerate(concepts):
+        purch = _purchases_of(_concept_ing_names(c), ctx)
+        reason = _purchase_violation(purch, str(c.get("anchor_ingredient") or ""))
+        if reason:
+            idxs.append((i, reason))
+    if not idxs:
+        return concepts
+
+    async def regen(i: int, reason: str) -> dict:
+        tier = (concepts[i].get("difficulty") or "").strip() or "the same"
+        correction = _purchase_correction(
+            _purchases_of(_concept_ing_names(concepts[i]), ctx), reason
+        ) + (
+            ' Return ONE replacement concept as JSON {"recipes":[{...same '
+            f"shape...}}]}}, SAME difficulty tier ('{tier}')."
+        )
+        prior = json.dumps(_concept_brief(concepts[i]), ensure_ascii=False)
+        msg = (
+            f"{ctx_text}{correction}\n\nConcept to fix:\n{prior}\n\n"
+            "Return the fixed concept now."
+        )
+        data = await _call_json(
+            client, model=settings.recipe_model, max_tokens=_CONCEPT_MAX_TOKENS,
+            system=base_system, user_msg=msg, category="generation",
+            stage="concept_fix",
+        )
+        recs = data.get("recipes") if isinstance(data, dict) else None
+        if isinstance(recs, list) and recs and isinstance(recs[0], dict):
+            return recs[0]
+        return concepts[i]
+
+    fixed = await asyncio.gather(
+        *(regen(i, r) for i, r in idxs), return_exceptions=True
+    )
+    for (i, _r), res in zip(idxs, fixed):
+        if isinstance(res, dict):
+            concepts[i] = res
+    logger.info("Pantry budget: regenerated %d concept(s): %s",
+                len(idxs), [i for i, _ in idxs])
+    for i, _r in idxs:
+        still = _purchase_violation(
+            _purchases_of(_concept_ing_names(concepts[i]), ctx),
+            str(concepts[i].get("anchor_ingredient") or ""),
+        )
+        if still:
+            logger.warning("Pantry budget: %r still violates after retry (%s) — "
+                           "ships with the purchases chip",
+                           concepts[i].get("title"), still)
+    return concepts
+
+
+# --------------------------------------------------------------------------- #
 # Owned-perishable guarantee (Prompt 34 A)
 # --------------------------------------------------------------------------- #
 # Fresh non-staple proteins outside the meat/seafood categories that still
@@ -1648,6 +1855,10 @@ class _Ctx:
     anchor_pool: list[MarketCandidate] = field(default_factory=list)
     # Batch titles (id -> title) for the detail-stage revised_title word cap.
     batch_titles: dict[int, str] = field(default_factory=dict)
+    # Pantry mode (P35): the minimize-buying switch for this batch, and the
+    # anchor keys of user-pinned deals (exempt from the purchase cap, P37).
+    pantry_mode: bool = False
+    deal_pin_keys: set[str] = field(default_factory=set)
 
 
 async def _resolve_pins(
@@ -2271,10 +2482,18 @@ async def _critique_and_fix(
     pantry_lines: str = "",
     market_idx: list[int] | None = None,
     contract: tuple[bool, int, list[str]] | None = None,
+    pantry_mode: bool = False,
 ) -> tuple[list[dict], list[dict]]:
     """Score concepts, regenerate weak ones once, return (concepts, critic_meta)."""
     enumerated, ask_count, terms = contract or (False, 0, [])
     contract_note = ""
+    if pantry_mode:
+        contract_note += (
+            "\nPANTRY MODE: the user asked to cook from what they have. Under "
+            "rubric 6, a concept implying MORE THAN ONE purchased ingredient, "
+            "or ANY purchased anchor or protein, FAILS (user-pinned deals "
+            "excepted). Combining pantry protein sources beats buying.\n"
+        )
     contract_hint = ""
     if enumerated:
         contract_note = (
@@ -3091,6 +3310,7 @@ async def generate_concepts(
     difficulties: list[str] | None = None,
     *,
     pinned_deal_ids: list[int] | None = None,
+    pantry_mode: bool = False,
     category: str = "generation",
 ) -> list[Recipe]:
     """One fast Claude call → N persisted concept recipes (status='concept').
@@ -3103,6 +3323,7 @@ async def generate_concepts(
     pin_dicts = _pin_dicts(pins)
     deal_pins = await _resolve_deal_pins(db, user.id, pinned_deal_ids or [])
     ctx = await _load_context(db, user)
+    ctx.pantry_mode = bool(pantry_mode)
     # Self-heal a starved flyer cache (the all-beef feed regression): schedule
     # background refreshes for saved stores with no current deals, so this
     # batch may run deal-less but the next one won't.
@@ -3179,6 +3400,9 @@ async def generate_concepts(
     pin_cands = _deal_pin_candidates(
         deal_pins, stores_rows, stores_rows[0] if stores_rows else None
     )
+    if ctx.pantry_mode:
+        # P35 B2: no market-pick reservations — only explicit user pins.
+        market_slots = 0
     if pin_cands:
         market_slots = min(max(market_slots, len(pin_cands)), n)
         primary_pool = [
@@ -3192,6 +3416,7 @@ async def generate_concepts(
     ctx.market_candidates = pin_cands + _select_market_anchors(
         primary_pool, other_pools, market_slots - len(pin_cands), recent_market
     )
+    ctx.deal_pin_keys = {c.key for c in pin_cands}
     # Badge plumbing (P35 #2): keep the FULL anchorable pool so a purchase-
     # anchored concept the model produced outside its assignments still gets
     # the verified badge, "Built around:" line, and price.
@@ -3261,7 +3486,7 @@ async def generate_concepts(
     # wanted but ZERO candidates exist, say so and forbid compensating by
     # piling the batch onto one pantry anchor.
     starved_block = ""
-    if market_slots > 0 and not ctx.market_candidates:
+    if market_slots > 0 and not ctx.market_candidates and not ctx.pantry_mode:
         starved_block = (
             "\n\nNO MARKET PICKS THIS BATCH — there are no usable store deals "
             "right now. Do NOT compensate by building several concepts on the "
@@ -3280,6 +3505,7 @@ async def generate_concepts(
         f"{_tier_plan_text(n, tiers)}.\n"
         f"Avoid repeating these recent titles: {_fmt_list(list(recent_titles))}."
         + ctx.variety_block
+        + (_pantry_mode_block() if ctx.pantry_mode else "")
         + perishable_block
         + market_block
         + starved_block
@@ -3337,6 +3563,7 @@ async def generate_concepts(
                 system_blocks, user_msg, _pantry_qty_lines(ctx.pantry),
                 market_idx=market_idx,
                 contract=(enumerated, ask_count, requested_terms),
+                pantry_mode=ctx.pantry_mode,
             )
             # Variety guard: never re-serve a recent signature under a new name,
             # and keep the batch mutually distinct (each concept differs from
@@ -3373,6 +3600,12 @@ async def generate_concepts(
                 client, raw, ctx.overlap_pool, ctx.overlap_carveout,
                 system_blocks, user_msg,
             )
+            # Pantry-mode purchase budget (P35 B4): deterministic, named
+            # regeneration; survivors chip at persist.
+            if ctx.pantry_mode:
+                raw = await _enforce_pantry_budget(
+                    client, raw, ctx, system_blocks, user_msg
+                )
             # Within-batch market anchor diversity (P32 B3, hardened P34 C6):
             # no two market picks on the same deal — and regen results are
             # verified, not trusted.
@@ -3444,6 +3677,11 @@ async def generate_concepts(
             # (never the model's). The live salmon card missed both because
             # only designated slots were ever matched here.
             cand = _match_candidate(anchor_name, ctx.anchor_pool, pantry_iids)
+        if ctx.pantry_mode and cand is not None and not cand.user_pin:
+            # Pantry mode: market picks are suspended entirely — an anchor
+            # that happens to sit on a flyer must not get shop-for-this
+            # treatment. Only an explicit user-pinned deal keeps its badge.
+            cand = None
         if cand is not None:
             duplicate = any(
                 cand.key == u.key or _same_product(cand, u)
@@ -3484,6 +3722,11 @@ async def generate_concepts(
             _protein_of(r), _calories_of(r.get("nutrition_per_serving")),
             ctx.protein_floor, ctx.calorie_cap, ctx.calorie_target,
         )
+        if ctx.pantry_mode:
+            purch = _purchases_of(_concept_ing_names(r), ctx)
+            if _purchase_violation(purch, anchor_name):
+                flags = dict(flags or {})
+                flags["purchases"] = {"count": len(purch), "items": purch[:4]}
         recipe = Recipe(
             user_id=user.id,
             status="concept",
@@ -3503,6 +3746,7 @@ async def generate_concepts(
             pinned_items_json=(pin_dicts + _deal_pin_dicts(pin_cands)) or None,
             direction=ctx.direction or None,
             difficulties=tiers or None,
+            pantry_mode=ctx.pantry_mode,
             critic_json=critic or None,
             signature_json={
                 "anchor_ingredient": r.get("anchor_ingredient"),
@@ -3645,9 +3889,24 @@ def _quality_flags(
     return flags or None
 
 
-def _fortify_correction(protein: float, floor: int, src: str) -> str:
+def _fortify_correction(
+    protein: float, floor: int, src: str, pantry_mode: bool = False
+) -> str:
     """Fortification with teeth (P32 C5): name protein-dense options WITH MASS
-    and permit anchor replacement when the anchor can't carry the floor."""
+    and permit anchor replacement when the anchor can't carry the floor.
+    In pantry mode (P35 B5) the fix must come from the PANTRY — combining
+    sources — never a new purchase."""
+    if pantry_mode:
+        return (
+            f"\n\nCORRECTION — PROTEIN FLOOR (PANTRY MODE): this recipe "
+            f"delivers only {protein:.0f} g protein per serving ({src}), below "
+            f"the required {floor} g floor. Fix it WITHOUT buying anything: "
+            "COMBINE pantry protein sources with real mass — eggs, canned "
+            "fish, legumes (chickpeas/black beans/lentils), grains, dairy "
+            "(greek yogurt, cottage cheese, cheeses). Stack two or three "
+            "(e.g. add 3 eggs + 1 cup chickpeas + 1/2 cup greek yogurt). Do "
+            "NOT merely restate higher numbers; the amounts must change."
+        )
     return (
         f"\n\nCORRECTION — PROTEIN FLOOR: this recipe delivers only {protein:.0f} g "
         f"protein per serving ({src}), below the required {floor} g floor. Fix it "
@@ -3755,7 +4014,13 @@ async def _fill_details(
     client = AsyncAnthropic(api_key=settings.anthropic_api_key)
     floor = ctx.protein_floor
     cap = ctx.calorie_cap
-    detail_l2 = _protein_block(floor) + ctx.pin_block + "\n\n" + ctx.context_text
+    detail_l2 = (
+        _protein_block(floor)
+        + (_pantry_mode_block() if ctx.pantry_mode else "")
+        + ctx.pin_block
+        + "\n\n"
+        + ctx.context_text
+    )
     detail_system = _cached_system(_DETAIL_SYSTEM, detail_l2)
     msgs = [_detail_user_msg(r, ctx) for r in recipes]
     results = await asyncio.gather(
@@ -3781,13 +4046,24 @@ async def _fill_details(
         # doesn't worsen any violated dimension (never adopt a worse version).
         viol_protein = floor > 0 and protein is not None and protein < floor
         viol_cal = cap > 0 and calories is not None and calories > cap
-        if viol_protein or viol_cal:
+        anchor_name = str(
+            (recipe.signature_json or {}).get("anchor_ingredient") or ""
+        ) if isinstance(recipe.signature_json, dict) else ""
+        purchases = _detail_purchases(ingredients, ctx) if ctx.pantry_mode else []
+        purchase_reason = (
+            _purchase_violation(purchases, anchor_name) if ctx.pantry_mode else None
+        )
+        if viol_protein or viol_cal or purchase_reason:
             src = (final_nut or {}).get("source", "est")
             correction = ""
             if viol_protein:
-                correction += _fortify_correction(protein, floor, src)
+                correction += _fortify_correction(
+                    protein, floor, src, pantry_mode=ctx.pantry_mode
+                )
             if viol_cal:
                 correction += _rebalance_correction(calories, cap, ctx.calorie_target)
+            if purchase_reason:
+                correction += _purchase_correction(purchases, purchase_reason)
             retry = await _call_json(
                 client, model=settings.detail_model, max_tokens=_DETAIL_MAX_TOKENS,
                 system=detail_system, user_msg=msgs[i] + correction,
@@ -3797,14 +4073,24 @@ async def _fill_details(
                 r_ings, r_model, r_comp = _reconcile_and_compute(retry, recipe, ctx)
                 r_final, r_protein = _effective_nutrition(r_model, r_comp)
                 r_cal = _calories_of(r_final)
+                r_purch = (
+                    _detail_purchases(r_ings, ctx) if ctx.pantry_mode else []
+                )
                 better = True
                 if viol_protein and (r_protein is None or r_protein < protein):
                     better = False
                 if viol_cal and (r_cal is None or r_cal > calories):
                     better = False
+                if purchase_reason and len(r_purch) > len(purchases):
+                    better = False
                 if better:
                     data, ingredients, final_nut = retry, r_ings, r_final
                     protein, calories = r_protein, r_cal
+                    purchases = r_purch
+                    purchase_reason = (
+                        _purchase_violation(purchases, anchor_name)
+                        if ctx.pantry_mode else None
+                    )
                     # Anchor replacement (P32 C5) may honestly rename the dish
                     # — but a detail-stage rename must not smuggle a word past
                     # the batch title cap (P35 #4: this is how 'Charred'
@@ -3829,9 +4115,19 @@ async def _fill_details(
                         recipe.title = new_title[:255]
                         ctx.batch_titles[recipe.id] = recipe.title
 
-        # Honesty flags (P32 C6/C7): a recipe that still lands below the floor
-        # or above the calorie band ships ONLY with a visible amber chip.
+        # Honesty flags (P32 C6/C7, P35 B4/B5): a recipe that still lands below
+        # the floor, above the calorie band, or over the pantry-mode purchase
+        # budget ships ONLY with a visible amber chip.
         flags = _quality_flags(protein, calories, floor, cap, ctx.calorie_target)
+        if purchase_reason:
+            flags = dict(flags or {})
+            flags["purchases"] = {"count": len(purchases), "items": purchases[:4]}
+        if ctx.pantry_mode and flags and flags.get("protein_below_floor"):
+            # P35 B5: informative one-buy fix — never auto-added to the recipe.
+            fix = _cheapest_protein_fix(ctx)
+            if fix is not None:
+                flags["protein_below_floor"]["cheapest_fix"] = fix
+        flags = flags or None
         recipe.quality_flags_json = flags
         if flags:
             logger.warning(
@@ -3929,8 +4225,17 @@ async def _load_detail_overlap(
         if r.id not in detail_ids
     ]
     ctx.overlap_pool = pool
-    # Batch titles for the detail-stage revised_title word cap (P35 #4).
+    # Batch titles for the detail-stage revised_title word cap.
     ctx.batch_titles = {r.id: r.title for r in batch}
+    # Pantry mode + pinned-deal exemptions follow the batch (P35/P37).
+    ctx.pantry_mode = bool(batch and batch[0].pantry_mode)
+    ctx.deal_pin_keys = {
+        a["anchor_key"]
+        for r in batch
+        for a in [r.market_anchor_json]
+        if isinstance(a, dict) and a.get("user_pin")
+        and isinstance(a.get("anchor_key"), str)
+    }
 
 
 async def run_details_bg(
@@ -3995,6 +4300,18 @@ async def _last_difficulties(db: AsyncSession, user_id: int) -> list[str]:
     return list(row) if row else []
 
 
+async def _last_pantry_mode(db: AsyncSession, user_id: int) -> bool:
+    """The pantry-mode switch from the user's most recent batch — warm-cache
+    pre-generation honors the last state (P35 A1)."""
+    row = await db.scalar(
+        select(Recipe.pantry_mode)
+        .where(Recipe.user_id == user_id)
+        .order_by(Recipe.generated_at.desc())
+        .limit(1)
+    )
+    return bool(row)
+
+
 async def warm_generate(user_id: int) -> None:
     """Background: two-stage pre-generation so the Recipes tab is warm.
 
@@ -4006,8 +4323,10 @@ async def warm_generate(user_id: int) -> None:
         if user is None:
             return
         difficulties = await _last_difficulties(db, user_id)
+        last_pm = await _last_pantry_mode(db, user_id)
         recipes = await generate_concepts(
-            db, user, difficulties=difficulties, category="pre-generation"
+            db, user, difficulties=difficulties, pantry_mode=last_pm,
+            category="pre-generation",
         )
         await db.commit()
         if recipes:

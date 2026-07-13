@@ -105,7 +105,7 @@ export function marketAnchorLine(r: Recipe): string | null {
  * unannotated — on the card AND the detail sheet. */
 export function QualityChips({ recipe }: { recipe: Recipe }) {
   const f = recipe.quality_flags;
-  if (!f || (!f.protein_below_floor && !f.heavy)) return null;
+  if (!f || (!f.protein_below_floor && !f.heavy && !f.purchases)) return null;
   const chip =
     "inline-flex items-center rounded-full bg-warn-soft px-2 py-1 text-[11px] font-semibold text-warn";
   return (
@@ -119,8 +119,28 @@ export function QualityChips({ recipe }: { recipe: Recipe }) {
       {f.heavy && (
         <span className={chip}>⚠ heavy: {Math.round(f.heavy.calories)} cal</span>
       )}
+      {f.purchases && (
+        <span className={chip}>
+          ⚠ needs {f.purchases.count} purchase{f.purchases.count === 1 ? "" : "s"}
+        </span>
+      )}
     </>
   );
+}
+
+/** Pantry-mode cheapest-fix note (Prompt 35 B5): a sub-floor recipe gets a
+ * one-line, informative way out — "hits 54g with one buy: chicken breast,
+ * $4.99 at Lidl". Never auto-added; the user decides. */
+export function cheapestFixLine(r: Recipe): string | null {
+  const pf = r.quality_flags?.protein_below_floor;
+  const fix = pf?.cheapest_fix;
+  if (!pf || !fix) return null;
+  const price =
+    fix.price != null
+      ? `$${Number(fix.price).toFixed(2)}${fix.unit ? `/${fix.unit}` : ""}`
+      : null;
+  const at = fix.store ? ` at ${fix.store}` : "";
+  return `hits ${Math.round(pf.floor_g)}g with one buy: ${fix.name}${price ? `, ${price}` : ""}${at}`;
 }
 
 export function MarketPickBadge() {

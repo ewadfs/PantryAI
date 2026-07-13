@@ -43,6 +43,16 @@ function tierRank(d: string | null): number {
 
 const ALL_TIERS: Difficulty[] = ["easy", "medium", "hard"];
 const DIFF_KEY = "pantryai:difficulties";
+const PANTRY_MODE_KEY = "pantryai:pantryMode";
+
+function loadPantryMode(): boolean {
+  if (typeof window === "undefined") return false;
+  try {
+    return localStorage.getItem(PANTRY_MODE_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
 
 function orderTiers(ds: Difficulty[]): Difficulty[] {
   return ALL_TIERS.filter((t) => ds.includes(t));
@@ -114,6 +124,8 @@ export default function RecipesPage() {
   const [perBatch, setPerBatch] = useState(5);
   const [difficulties, setDifficulties] = useState<Difficulty[]>(ALL_TIERS);
   const [batchDifficulties, setBatchDifficulties] = useState<string[]>([]);
+  const [pantryMode, setPantryMode] = useState(false);
+  const [batchPantryMode, setBatchPantryMode] = useState(false);
   const stepTimer = useRef<ReturnType<typeof setInterval> | null>(null);
   const pollTimer = useRef<ReturnType<typeof setInterval> | null>(null);
   const directionRef = useRef("");
@@ -124,11 +136,30 @@ export default function RecipesPage() {
   useEffect(() => {
     difficultiesRef.current = difficulties;
   }, [difficulties]);
+  const pantryModeRef = useRef(false);
+  useEffect(() => {
+    pantryModeRef.current = pantryMode;
+  }, [pantryMode]);
 
-  // Hydrate the tier selection from localStorage once on mount.
+  // Hydrate the tier selection + pantry mode from localStorage once on mount.
   useEffect(() => {
     setDifficulties(loadDifficulties());
+    setPantryMode(loadPantryMode());
   }, []);
+
+  function togglePantryMode() {
+    setPantryMode((prev) => {
+      const next = !prev;
+      if (typeof window !== "undefined") {
+        try {
+          localStorage.setItem(PANTRY_MODE_KEY, next ? "1" : "0");
+        } catch {
+          /* persistence is best-effort */
+        }
+      }
+      return next;
+    });
+  }
 
   function toggleDifficulty(d: Difficulty) {
     setDifficulties((prev) => {
@@ -181,18 +212,21 @@ export default function RecipesPage() {
     const activePins = pinsRef.current;
     const activeDirection = directionRef.current.trim();
     const activeDiffs = difficultiesRef.current;
+    const activePantryMode = pantryModeRef.current;
     try {
       const res = await generateRecipes(
         activePins.filter((p) => p.kind !== "deal").map((p) => p.id),
         activeDirection,
         activeDiffs,
         activePins.filter((p) => p.kind === "deal").map((p) => p.id),
+        activePantryMode,
       );
       setRecipes(res.recipes);
       setGeneratedAt(res.recipes[0]?.generated_at ?? new Date().toISOString());
       setBatchPins(activePins.map((p) => p.name));
       setBatchDirection(activeDirection || null);
       setBatchDifficulties(activeDiffs.length === 3 ? [] : activeDiffs);
+      setBatchPantryMode(activePantryMode);
       setPins([]); // pins satisfied — clear them
       // Direction is ephemeral: clear the input, offer it back as a placeholder.
       if (activeDirection) setLastDirection(activeDirection);
@@ -227,6 +261,7 @@ export default function RecipesPage() {
         setBatchPins(res.pinned ?? []);
         setBatchDirection(res.direction ?? null);
         setBatchDifficulties(res.difficulties ?? []);
+        setBatchPantryMode(!!res.pantry_mode);
       }
     } catch {
       /* ignore — user can generate */
@@ -511,6 +546,7 @@ export default function RecipesPage() {
   if (batchDirection) labelParts.push(`direction: ‘${batchDirection}’`);
   const scope = scopeLabel(batchDifficulties);
   if (scope) labelParts.push(scope);
+  if (batchPantryMode) labelParts.push("pantry mode");
   const batchLabel = labelParts.join(" · ");
 
   return (
@@ -579,6 +615,8 @@ export default function RecipesPage() {
                 prev.filter((x) => !(x.id === id && (x.kind ?? "pantry") === (kind ?? "pantry"))),
               )
             }
+            pantryMode={pantryMode}
+            onTogglePantryMode={togglePantryMode}
             difficulties={difficulties}
             onToggleDifficulty={toggleDifficulty}
             direction={direction}

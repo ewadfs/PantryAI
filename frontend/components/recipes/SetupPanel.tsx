@@ -41,6 +41,8 @@ const SetupPanel = forwardRef<HTMLDivElement, {
   pantryItems: PantryItem[];
   onAddPin: (p: Pin) => void;
   onRemovePin: (id: number, kind?: "pantry" | "deal") => void;
+  pantryMode: boolean;
+  onTogglePantryMode: () => void;
   difficulties: Difficulty[];
   onToggleDifficulty: (d: Difficulty) => void;
   direction: string;
@@ -53,6 +55,7 @@ const SetupPanel = forwardRef<HTMLDivElement, {
 }>(function SetupPanel(props, ref) {
   const {
     storeName, onOpenStore, pins, pantryItems, onAddPin, onRemovePin,
+    pantryMode, onTogglePantryMode,
     difficulties, onToggleDifficulty, direction, onChangeDirection,
     lastDirection, directionRef, onGenerate, generating, stepText,
   } = props;
@@ -98,6 +101,39 @@ const SetupPanel = forwardRef<HTMLDivElement, {
         onAdd={onAddPin}
         onRemove={onRemovePin}
       />
+
+      {/* pantry mode (Prompt 35): minimize buying — market slots off, at most
+          one minor purchase per recipe. Persisted; warm cache honors it. */}
+      <button
+        type="button"
+        role="switch"
+        aria-checked={pantryMode}
+        onClick={onTogglePantryMode}
+        className={`mb-3 flex w-full items-center justify-between rounded-xl border px-3 py-2 text-left transition ${
+          pantryMode
+            ? "border-brand bg-brand-soft"
+            : "border-hairline bg-canvas"
+        }`}
+      >
+        <span
+          className={`text-xs font-semibold ${
+            pantryMode ? "text-brand-dark" : "text-ink-soft"
+          }`}
+        >
+          🏠 Cook from what I have — minimize buying
+        </span>
+        <span
+          className={`relative h-5 w-9 shrink-0 rounded-full transition-colors ${
+            pantryMode ? "bg-brand" : "bg-hairline"
+          }`}
+        >
+          <span
+            className={`absolute top-0.5 h-4 w-4 rounded-full bg-white shadow transition-transform ${
+              pantryMode ? "translate-x-[18px]" : "translate-x-0.5"
+            }`}
+          />
+        </span>
+      </button>
 
       {generating ? (
         <div className="flex h-12 items-center justify-center gap-2 rounded-2xl bg-brand-soft px-4 text-sm font-medium text-brand-dark">

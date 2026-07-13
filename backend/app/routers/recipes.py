@@ -64,10 +64,11 @@ async def generate(
     pinned_deals = payload.pinned_deal_ids if payload else []
     direction = payload.direction if payload else None
     difficulties = payload.difficulties if payload else []
+    pantry_mode = payload.pantry_mode if payload else False
     try:
         recipes = await recipe_engine.generate_concepts(
             db, current_user, pinned, direction, difficulties,
-            pinned_deal_ids=pinned_deals,
+            pinned_deal_ids=pinned_deals, pantry_mode=pantry_mode,
         )
     except ValueError as e:
         # User-facing validation error (e.g. bad pinned ids) — keep the 400.
@@ -161,12 +162,14 @@ async def latest(
             pinned.append(p.get("name"))
     direction = rows[0].direction if rows else None
     difficulties = (rows[0].difficulties or []) if rows else []
+    batch_pantry_mode = bool(rows and rows[0].pantry_mode)
     return LatestResponse(
         generated_at=newest,
         store_name=store_name,
         pinned=pinned,
         direction=direction,
         difficulties=difficulties,
+        pantry_mode=batch_pantry_mode,
         recipes=[RecipeRead.model_validate(recipe_engine.recipe_to_read(r)) for r in rows],
     )
 

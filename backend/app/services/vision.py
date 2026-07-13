@@ -754,6 +754,14 @@ class CircularExtractor:
     async def _combo_has_valid_fetch(
         self, db: AsyncSession, chain_id: int, region_key: str, today: date
     ) -> CircularFetch | None:
+        """A fetch only counts as valid if its deals actually landed.
+
+        A successful capture whose EXTRACTION failed (e.g. the Anthropic
+        account ran dry mid-batch) used to leave a valid-looking fetch that
+        blocked every re-activation until the flyer expired — with zero deals
+        served the whole week. Requiring extracted rows makes those poisoned
+        fetches invisible, so the next touch simply re-runs the combo.
+        """
         return await db.scalar(
             select(CircularFetch)
             .where(
@@ -761,6 +769,9 @@ class CircularExtractor:
                 CircularFetch.region_key == region_key,
                 CircularFetch.status.in_(("success", "partial")),
                 CircularFetch.valid_to >= today,
+                select(DealCache.id)
+                .where(DealCache.fetch_id == CircularFetch.id)
+                .exists(),
             )
             .order_by(CircularFetch.fetched_at.desc())
         )
@@ -781,7 +792,25 @@ class CircularExtractor:
                 "chain": slug, "region": region_key, "status": "failed",
                 "pages": 0, "deals": 0, "matched": 0, "error": fetch.error_message,
             }
-        result = await self.process_circular(db, fetch.id)
+        fetch_id = fetch.id
+        try:
+            result = await self.process_circular(db, fetch_id)
+        except Exception as exc:  # noqa: BLE001 — extraction died (API/billing/
+            # network): the fetch must not survive as valid or it blocks every
+            # re-attempt until the flyer expires while serving zero deals.
+            await db.rollback()
+            failed = await db.get(CircularFetch, fetch_id)
+            if failed is not None:
+                failed.status = "failed"
+                failed.error_message = (
+                    f"extraction failed: {type(exc).__name__}: {exc}"
+                )[:1000]
+                await db.commit()
+            return {
+                "chain": slug, "region": region_key, "status": "failed",
+                "pages": 0, "deals": 0, "matched": 0,
+                "error": f"extraction failed: {type(exc).__name__}: {exc}",
+            }
         await db.commit()
         return {
             "chain": slug, "region": region_key, "status": fetch.status,

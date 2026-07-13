@@ -59,15 +59,22 @@ async def _deals_refresh_loop() -> None:
                             {"k": _DEALS_REFRESH_LOCK},
                         )
                 else:
-                    logger.info("Deals refresh: another replica holds the lock; skipping cycle.")
-                    pending_remain = False
+                    # Replica overlap during a redeploy: the outgoing replica
+                    # can hold the lock at our first cycle. Retry SOON — a
+                    # 6-hour sleep here stranded parked batches for hours
+                    # after every deploy (observed live).
+                    logger.info(
+                        "Deals refresh: another replica holds the lock; "
+                        "retrying in 15 minutes."
+                    )
+                    pending_remain = True
         except asyncio.CancelledError:
             raise
         except Exception:  # noqa: BLE001 — the loop must survive bad cycles
             logger.exception("Deals refresh cycle failed; retrying next cycle.")
-            pending_remain = False
-        # Parked batches get a fast 15-min sweep cadence; quiet cycles keep
-        # the configured hours.
+            pending_remain = True
+        # Parked batches (and lock-skipped or failed cycles) get a fast 15-min
+        # cadence; quiet cycles keep the configured hours.
         await asyncio.sleep(
             900 if pending_remain
             else max(1, settings.deals_refresh_hours) * 3600

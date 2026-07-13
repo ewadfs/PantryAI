@@ -293,6 +293,10 @@ class _StubMessages:
             return _msg(self._retitle(user))
         if "CONCEPT to write in full" in user:
             return _msg(self._detail(user, sys_text))
+        if "edit one short recipe sentence" in sys_text:
+            return _msg(self._price_edit(user))
+        if "ANCHOR PROMINENCE VIOLATION" in user:
+            return _msg({"recipes": [self._prominence_regen(user)]})
         if "ANCHOR CAP VIOLATION" in user:
             return _msg({"recipes": [self._anchor_cap_regen()]})
         if "INGREDIENT OVERLAP VIOLATION" in user:
@@ -335,7 +339,7 @@ class _StubMessages:
         n = int(re.search(r"propose exactly (\d+) concepts", user).group(1))
         picks = re.findall(
             r"- MARKET PICK \d+: build around (.+?): \$([0-9.]+)(?:/(\w+))?"
-            r"((?: — at [^\n\[]+)?)", user,
+            r"(?:,[^\n—\[]*)?\s*((?:—\s*at\s+[^\n\[]+)?)", user,
         )
         tiers = []
         mix = re.search(r"difficulty mix:\s*([^\n]+)", user).group(1)
@@ -382,11 +386,15 @@ class _StubMessages:
         recipes = []
         for k, (name, price, unit, at_tail) in enumerate(picks[: n - len(pantry_concepts)]):
             clean = ingredient_matcher.normalize_flyer_name(name) or name
-            store_note = at_tail.replace(" — at ", " at ").strip()
+            store_note = re.sub(r"—\s*at\s+", "at ", at_tail).strip()
             fmt = _FORMATS[k % len(_FORMATS)]
             veg = self._veg_for(clean)
+            title = (
+                f"Sazon-Charred {clean} {fmt.title()}" if k == 0
+                else f"Charred {clean} {fmt.title()}"
+            )
             recipes.append({
-                "title": f"Charred {clean} {fmt.title()}",
+                "title": title,
                 "description": f"{clean} {fmt} over pantry sides.",
                 "difficulty": tiers[min(k + 1, n - 1)],
                 "prep_time_min": 15, "cook_time_min": 25, "total_time_min": 40,
@@ -419,8 +427,58 @@ class _StubMessages:
                      "in_pantry": True, "on_sale": False, "sale_price": None},
                 ]),
             })
+        if len(recipes) >= 3 and any("at " in p[3] for p in picks):
+            recipes[-1] = {
+                "title": "Weeknight Harvest Rice Skillet",
+                "description": "Rice and greens stretch the pork loin chops.",
+                "difficulty": recipes[-1]["difficulty"],
+                "prep_time_min": 15, "cook_time_min": 25, "total_time_min": 40,
+                "servings": 2,
+                "why_this_recipe": (
+                    "Built around pork loin chops at $8.99/12oz this week."
+                ),
+                "cuisine": "american",
+                "dish_format": "skillet",
+                "anchor_ingredient": "pork loin chops",
+                "flavor_lead": ["adobo pork rub"],
+                "market_pick": True,
+                "tags": ["market pick"],
+                "nutrition_per_serving": {"calories": 650, "protein_g": 55},
+                "key_ingredients": with_pin([
+                    {"generic_name": "pork loin chops", "brand": None,
+                     "in_pantry": False, "on_sale": False, "sale_price": None},
+                    {"generic_name": "white rice", "brand": None,
+                     "in_pantry": True, "on_sale": False, "sale_price": None},
+                    {"generic_name": "zucchini", "brand": None,
+                     "in_pantry": True, "on_sale": False, "sale_price": None},
+                    {"generic_name": "olive oil", "brand": None,
+                     "in_pantry": True, "on_sale": False, "sale_price": None},
+                ]),
+            }
         recipes += pantry_concepts
         return {"recipes": recipes[:n]}
+
+    def _prominence_regen(self, user: str) -> dict:
+        m = re.search(r"Concept to fix:\n(\{.*\})\n\nReturn", user, re.S)
+        brief = json.loads(m.group(1)) if m else {}
+        anchor = str(brief.get("anchor_ingredient") or "dinner")
+        c = self._overlap_regen(user)  # same reconstruction shape
+        c["title"] = f"{anchor.title()} Skillet Supper"
+        c["description"] = f"{anchor.title()} seared over garlic rice and greens."
+        c["anchor_ingredient"] = anchor
+        c["flavor_lead"] = brief.get("flavor_lead") or ["adobo pork rub"]
+        c["why_this_recipe"] = (
+            "Built around pork loin chops at $8.99/12oz this week."
+        )
+        return c
+
+    @staticmethod
+    def _price_edit(user: str) -> dict:
+        m = re.search(r"VERIFIED price for .+? is (\$[\d.]+(?:/\w+)?)", user)
+        if m:
+            return {"text": f"Built around pork loin chops at {m.group(1)} "
+                            "this week — at Stop & Shop."}
+        return {"text": "Built around this week's deal — price at the shelf."}
 
     def _variety_regen(self, user: str) -> dict:
         """Keep the anchor, change format + cuisine — like the live model."""
@@ -532,7 +590,8 @@ class _StubMessages:
         """P33 regen: same dish, new seasoning direction (the correction asks
         for a different seasoning family; anchor stays)."""
         m = re.search(
-            r"Concept (?:to replace|that repeats):\n(\{.*\})\n\nReturn", user, re.S
+            r"Concept (?:to replace|that repeats|to fix):\n(\{.*\})\n\nReturn",
+            user, re.S,
         )
         brief = json.loads(m.group(1)) if m else {}
         keys = [
@@ -1227,6 +1286,63 @@ async def run_store(default_slug: str, stub: bool) -> None:
         print(f"feed order: tier-leading dish is the all-pantry $0 dish "
               f"(stub emitted it LAST; the sort promoted it): "
               f"{'YES' if first_all_pantry and beef_idx == [0] else 'NO'}")
+
+        # -- P35: prose prices, badge plumbing, prominence, hyphen cap ------ #
+        allowed: set = set()
+        for d in (
+            (await db.execute(
+                select(DealCache).where(
+                    DealCache.region_key.in_([v[2] for v in STORES.values()])
+                )
+            )).scalars().all()
+        ):
+            for v in (d.sale_price, d.regular_price):
+                p = recipe_engine._norm_price(v)
+                if p is not None:
+                    allowed.add(p)
+        n_prices = 0
+        unverified: list = []
+        for r in rows:
+            for text in (r.why_this_recipe, r.description):
+                got = recipe_engine._prices_in(text)
+                n_prices += len(got)
+                unverified += sorted(got - allowed)
+        print(f"prose price scan: {n_prices} dollar figure(s) in narrative "
+              f"text; unverifiable remaining: "
+              f"{unverified if unverified else '0 — every price matches deal_cache'}")
+
+        rogue = next(
+            (r for r in rows
+             if "pork" in str((r.market_anchor_json or {}).get("name") or "")),
+            None,
+        )
+        if rogue is not None:
+            a = rogue.market_anchor_json
+            print(f"stray purchase-anchor plumbing: '{rogue.title}' ignored its "
+                  f"assignment (invented $8.99/12oz) -> badge={rogue.is_market_pick}, "
+                  f"built around {a.get('name')} ${a.get('sale_price')}"
+                  f"{'/' + a['price_unit'] if a.get('price_unit') else ''}"
+                  f"{' — at ' + a.get('store') if a.get('cross_store') else ''}; "
+                  f"why: \"{(rogue.why_this_recipe or '')[:80]}\"")
+
+        prominent = 0
+        market_rows = [r for r in rows if r.is_market_pick]
+        for r in market_rows:
+            sig = r.signature_json or {}
+            a_toks = {
+                t for t in ingredient_matcher._tokens(
+                    str(sig.get("anchor_ingredient") or "")
+                ) if len(t) > 2
+            }
+            in_title = bool(a_toks & recipe_engine._title_words(r.title))
+            desc_lead = bool(
+                a_toks & set(ingredient_matcher._tokens(r.description or "")[:4])
+            )
+            prominent += in_title or desc_lead
+        print(f"anchor prominence: {prominent}/{len(market_rows)} market picks "
+              f"star (anchor in title or description lead)")
+        print(f"hyphen/accent tokenization: 'Sazón-Charred' counts 'charred': "
+              f"{'YES' if 'charred' in recipe_engine._title_words('Sazón-Charred Salmon') else 'NO'}")
 
 
 async def clone_check() -> None:

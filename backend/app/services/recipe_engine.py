@@ -14,6 +14,7 @@ import json
 import logging
 import math
 import re
+import unicodedata
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
@@ -1497,6 +1498,12 @@ class _Ctx:
     # Saved chain×regions with NO current deals and no recent fetch attempt —
     # generation self-heals by scheduling a background circular refresh.
     stale_deal_combos: list[tuple[int, str | None]] = field(default_factory=list)
+    # EVERY anchorable deal across the batch's store set (not just the
+    # designated slots) — badge plumbing (P35 #2): a purchase-anchored concept
+    # the model produced on its own still gets the verified badge + price.
+    anchor_pool: list[MarketCandidate] = field(default_factory=list)
+    # Batch titles (id -> title) for the detail-stage revised_title word cap.
+    batch_titles: dict[int, str] = field(default_factory=dict)
 
 
 async def _resolve_pins(
@@ -2053,7 +2060,10 @@ async def _run_critic(
             f"\nMARKET PICKS at indices {sorted(market_idx)}: each is anchored on a "
             "current store DEAL the user intentionally buys — do NOT fail these on "
             "rubric 6 (pantry realism) or rubric 2 for the anchor NOT being in the "
-            "pantry. Judge the rest of the dish normally.\n"
+            "pantry. Judge the rest of the dish normally. The anchor is the "
+            "intentional purchase and must STAR: it belongs in the title or as "
+            "the description's opening subject — an anchor reading as filler "
+            "('cauliflower bulks the beef curry') fails rubric 2.\n"
         )
     user_msg = (
         f"PROTEIN FLOOR: {floor} g per serving.\n"
@@ -2637,6 +2647,176 @@ async def _enforce_anchor_cap(
 
 
 # --------------------------------------------------------------------------- #
+# Prose price verification (P35 #1) — trust-our-table extends to narrative
+# --------------------------------------------------------------------------- #
+_PRICE_RE = re.compile(r"\$\s*(\d+(?:\.\d{1,2})?)")
+# A price plus its optional unit tail ("$8.99/12oz", "$1.99 /lb").
+_PRICE_EXPR_RE = re.compile(r"\$\s*\d+(?:\.\d{1,2})?(?:\s*/\s*[a-z0-9.]{1,8})?", re.I)
+
+
+def _norm_price(v) -> str | None:
+    try:
+        return f"{Decimal(str(v)):.2f}"
+    except (InvalidOperation, ValueError, TypeError):
+        return None
+
+
+def _prices_in(text: str | None) -> set[str]:
+    return {
+        p for p in (_norm_price(m) for m in _PRICE_RE.findall(text or ""))
+        if p is not None
+    }
+
+
+def _allowed_prices(ctx: _Ctx) -> set[str]:
+    """Every dollar figure our deal table can vouch for across the batch's
+    store set (sale + regular prices)."""
+    allowed: set[str] = set()
+    pools = [ctx.all_deals, *(deals for _n, deals in ctx.other_store_deals)]
+    for deals in pools:
+        for d in deals:
+            for v in (d.sale_price, d.regular_price):
+                p = _norm_price(v)
+                if p is not None:
+                    allowed.add(p)
+    return allowed
+
+
+async def _verify_prose_prices(
+    client: AsyncAnthropic, concepts: list[dict], ctx: _Ctx, pantry_iids: set[int]
+) -> tuple[int, int]:
+    """Trust-our-table for NARRATIVE text (P35 #1): every dollar figure in
+    why_this_recipe/description must match a current deal_cache row for the
+    batch's store set. An unverifiable price gets one tiny rewrite call (fed
+    the verified price when the anchor matches a real deal, else told to drop
+    numbers); if that still fails, the price expression is deterministically
+    replaced with "on deal". Returns (prices_found, rewritten_fields)."""
+    allowed = _allowed_prices(ctx)
+    found_total = 0
+    rewritten = 0
+    for c in concepts:
+        cand = _match_candidate(
+            c.get("anchor_ingredient") or "",
+            ctx.market_candidates + ctx.anchor_pool, pantry_iids,
+        )
+        verified_hint = (
+            f'The VERIFIED price for {c.get("anchor_ingredient")} is '
+            f"${cand.deal.sale_price}"
+            f"{'/' + cand.deal.price_unit if cand.deal.price_unit else ''} — "
+            "you may cite exactly that."
+            if cand is not None
+            else "No price could be verified — do NOT cite any dollar figure; "
+            '"on deal this week" is the most you may claim.'
+        )
+        for fld in ("why_this_recipe", "description"):
+            text = str(c.get(fld) or "")
+            found = _prices_in(text)
+            found_total += len(found)
+            bad = found - allowed
+            if not bad:
+                continue
+            data = await _call_json(
+                client, model=settings.critic_model_id, max_tokens=200,
+                system=(
+                    "You edit one short recipe sentence. Return ONLY valid "
+                    'JSON: {"text": "<edited sentence>"}'
+                ),
+                user_msg=(
+                    f"This sentence cites UNVERIFIED PRICE(s) {sorted(bad)} that "
+                    f"do not match any current store deal. {verified_hint}\n\n"
+                    f"Sentence: {text}\n\nRewrite it, keeping everything else."
+                ),
+                category="generation", stage="concept_fix",
+            )
+            new_text = str(data.get("text") or "").strip() if isinstance(data, dict) else ""
+            if not new_text or (_prices_in(new_text) - allowed):
+                # Deterministic strip: the number goes, the claim softens.
+                new_text = re.sub(r"\s{2,}", " ", _PRICE_EXPR_RE.sub("on deal", text))
+                new_text = new_text.replace("at on deal", "on deal")
+            c[fld] = new_text
+            rewritten += 1
+            logger.warning(
+                "Prose price scrub: %r cited unverifiable %s in %s — rewritten.",
+                c.get("title"), sorted(bad), fld,
+            )
+    return found_total, rewritten
+
+
+# --------------------------------------------------------------------------- #
+# Anchor prominence (P35 #3) — the intentional purchase must STAR
+# --------------------------------------------------------------------------- #
+_SUBORDINATE_RE = re.compile(
+    r"\b(bulks?|stretch(?:es)?|pads?|fills?(?:\s+out)?|rounds?\s+out|supports?)\b",
+    re.IGNORECASE,
+)
+
+
+def _anchor_prominent(c: dict, cand: MarketCandidate) -> bool:
+    """Does the market anchor star? In the TITLE, or the first-named element
+    of the description — and never as filler ('cauliflower bulks the beef
+    curry' fails)."""
+    anchor_tokens = {
+        t
+        for t in ingredient_matcher._tokens(
+            str(c.get("anchor_ingredient") or "") + " " + (cand.clean_name or "")
+        )
+        if len(t) > 2
+    }
+    if not anchor_tokens:
+        return True
+    if anchor_tokens & _title_words(str(c.get("title") or "")):
+        return True
+    desc = str(c.get("description") or "")
+    lead = set(ingredient_matcher._tokens(desc)[:4])
+    return bool(anchor_tokens & lead) and not _SUBORDINATE_RE.search(desc)
+
+
+async def _enforce_anchor_prominence(
+    client: AsyncAnthropic,
+    concepts: list[dict],
+    ctx: _Ctx,
+    pantry_iids: set[int],
+    base_system: list[dict] | str,
+    ctx_text: str,
+) -> list[dict]:
+    """A market anchor is the intentional purchase and must star: in the
+    title, or leading the description (P35 #3). One named retry; if the model
+    still buries it, the title is deterministically prefixed."""
+    all_cands = ctx.market_candidates + ctx.anchor_pool
+    for i, c in enumerate(concepts):
+        cand = _match_candidate(c.get("anchor_ingredient") or "", all_cands, pantry_iids)
+        if cand is None or _anchor_prominent(c, cand):
+            continue
+        anchor = c.get("anchor_ingredient") or cand.clean_name
+        tier = (c.get("difficulty") or "").strip() or "the same"
+        correction = (
+            f"\n\nANCHOR PROMINENCE VIOLATION: {anchor} is this dish's market "
+            "anchor — the intentional purchase of the week — but it doesn't "
+            "star. Put it in the TITLE or make it the first-named subject of "
+            "the description. It must never read as filler ('cauliflower "
+            "bulks the beef curry' fails). Return ONE fixed concept as JSON "
+            '{"recipes":[{...same shape...}]} keeping the SAME anchor and '
+            f"difficulty tier ('{tier}')."
+        )
+        prior = json.dumps(_concept_brief(c), ensure_ascii=False)
+        msg = f"{ctx_text}{correction}\n\nConcept to fix:\n{prior}\n\nReturn the fixed concept now."
+        data = await _call_json(
+            client, model=settings.recipe_model, max_tokens=_CONCEPT_MAX_TOKENS,
+            system=base_system, user_msg=msg, category="generation",
+            stage="concept_fix",
+        )
+        recs = data.get("recipes") if isinstance(data, dict) else None
+        if isinstance(recs, list) and recs and isinstance(recs[0], dict):
+            concepts[i] = recs[0]
+        if not _anchor_prominent(concepts[i], cand):
+            # Deterministic guarantee: the anchor headlines.
+            label = (cand.clean_name or str(anchor)).title()
+            concepts[i]["title"] = f"{label}: {concepts[i].get('title') or ''}"[:255].strip(": ")
+            logger.info("Anchor prominence: prefixed title with %r", label)
+    return concepts
+
+
+# --------------------------------------------------------------------------- #
 # Title diversity (Prompt 32 D9)
 # --------------------------------------------------------------------------- #
 _TITLE_STOPWORDS = {
@@ -2647,11 +2827,31 @@ _TITLE_STOPWORDS = {
 
 
 def _title_words(title: str) -> set[str]:
+    """Signature words of a title. Tokenizes THROUGH hyphens and compounds
+    ('Sazon-Charred' contains 'charred') and through accents ('Sazón-Charred'
+    must count too — [a-z0-9] alone shreds 'sazón' into garbage and lets
+    unicode variants evade the cap)."""
+    text = unicodedata.normalize("NFKD", title or "")
+    text = "".join(ch for ch in text if not unicodedata.combining(ch))
     return {
         t
-        for t in ingredient_matcher._tokens(title or "")
+        for t in ingredient_matcher._tokens(text)
         if len(t) > 2 and t not in _TITLE_STOPWORDS and not t.isdigit()
     }
+
+
+def _strip_title_words(title: str, banned: set[str]) -> str:
+    """Deterministically remove banned signature words from a title (the
+    fallback when a retitle attempt fails — the cap must ALWAYS hold)."""
+    parts = re.split(r"[^A-Za-z0-9]+", title or "")
+    kept = [
+        p for p in parts
+        if p and ingredient_matcher._singular(
+            unicodedata.normalize("NFKD", p.lower())
+            .encode("ascii", "ignore").decode()
+        ) not in banned
+    ]
+    return " ".join(kept).strip() or (title or "")
 
 
 def _overused_title_words(titles: list[str], limit: int = 2) -> dict[str, list[int]]:
@@ -2716,9 +2916,19 @@ async def _enforce_title_diversity(
                 _title_words(new_title) & set(banned)
             ):
                 concepts[i]["title"] = new_title
+    # Deterministic fallback (P35 #4): the live 'Charred ×3' batch shipped
+    # because a failed/regressed retitle only WARNED. The cap must always
+    # hold — strip the overused word from offenders beyond the first two.
+    still = _overused_title_words([str(c.get("title") or "") for c in concepts])
+    for word, idxs in still.items():
+        for i in idxs[2:]:
+            stripped = _strip_title_words(str(concepts[i].get("title") or ""), {word})
+            logger.info("Title diversity: deterministically stripped %r from %r",
+                        word, concepts[i].get("title"))
+            concepts[i]["title"] = stripped
     still = _overused_title_words([str(c.get("title") or "") for c in concepts])
     if still:
-        logger.warning("Title diversity: word(s) still overused after retitle: %s",
+        logger.warning("Title diversity: word(s) STILL overused after strip: %s",
                        sorted(still))
     else:
         logger.info("Title diversity: retitled %d concept(s); banned %s",
@@ -2818,6 +3028,10 @@ async def generate_concepts(
     ctx.market_candidates = _select_market_anchors(
         primary_pool, other_pools, market_slots, recent_market
     )
+    # Badge plumbing (P35 #2): keep the FULL anchorable pool so a purchase-
+    # anchored concept the model produced outside its assignments still gets
+    # the verified badge, "Built around:" line, and price.
+    ctx.anchor_pool = primary_pool + [c for pool in other_pools for c in pool]
     # Is the WIDENED pool (across every saved store) genuinely exhausted after
     # this selection? Gates the "pantry's too small" relaxation note (P32 3d).
     chosen_keys = {c.key for c in ctx.market_candidates}
@@ -2949,7 +3163,8 @@ async def generate_concepts(
             market_idx = [
                 i for i, c in enumerate(raw)
                 if _match_candidate(
-                    c.get("anchor_ingredient") or "", ctx.market_candidates, pantry_iids
+                    c.get("anchor_ingredient") or "",
+                    ctx.market_candidates + ctx.anchor_pool, pantry_iids,
                 )
                 is not None
             ]
@@ -3006,13 +3221,29 @@ async def generate_concepts(
                 client, raw, ctx.market_candidates, pantry_iids,
                 system_blocks, user_msg,
             )
+            # Anchor prominence (P35 #3): the intentional purchase stars —
+            # title or description lead, never filler.
+            raw = await _enforce_anchor_prominence(
+                client, raw, ctx, pantry_iids, system_blocks, user_msg
+            )
             # Title diversity (P32 D9): no signature word in 3+ titles.
             raw = await _enforce_title_diversity(client, raw)
+            # Prose price verification (P35 #1): every dollar figure in the
+            # narrative must match our deal table, or it's rewritten.
+            found, scrubbed = await _verify_prose_prices(
+                client, raw, ctx, pantry_iids
+            )
+            logger.info("Prose price scan: %d price(s) found, %d field(s) "
+                        "rewritten as unverifiable.", found, scrubbed)
 
     # Feed order (P34 B5): within each tier, pantry-anchored ($0/cheapest)
     # first, market picks after — persisted in this order so /latest (ordered
-    # by id) serves the all-pantry dish as its tier's headline.
-    pairs = _feed_sort(list(zip(raw, critics)), ctx.market_candidates, pantry_iids)
+    # by id) serves the all-pantry dish as its tier's headline. Purchase-
+    # anchored strays (P35 #2) sort with the market picks they really are.
+    pairs = _feed_sort(
+        list(zip(raw, critics)), ctx.market_candidates + ctx.anchor_pool,
+        pantry_iids,
+    )
 
     # Persist-time distinctness gate (P34 C6): the final say on market anchors.
     # Selection dedups products, enforcement verifies regens — and this gate
@@ -3033,6 +3264,13 @@ async def generate_concepts(
         # user doesn't own (source of truth: OUR deal cache, not the model flag).
         anchor_name = r.get("anchor_ingredient") or ""
         cand = _match_candidate(anchor_name, ctx.market_candidates, pantry_iids)
+        if cand is None:
+            # Badge plumbing (P35 #2): a purchase-anchored concept the model
+            # produced OUTSIDE its assignments still matches the full deal
+            # pool — it gets the badge, "Built around:" line, and OUR price
+            # (never the model's). The live salmon card missed both because
+            # only designated slots were ever matched here.
+            cand = _match_candidate(anchor_name, ctx.anchor_pool, pantry_iids)
         if cand is not None:
             duplicate = any(
                 cand.key == u.key or _same_product(cand, u)
@@ -3393,10 +3631,29 @@ async def _fill_details(
                 if better:
                     data, ingredients, final_nut = retry, r_ings, r_final
                     protein, calories = r_protein, r_cal
-                    # Anchor replacement (P32 C5) may honestly rename the dish.
+                    # Anchor replacement (P32 C5) may honestly rename the dish
+                    # — but a detail-stage rename must not smuggle a word past
+                    # the batch title cap (P35 #4: this is how 'Charred'
+                    # shipped in three titles).
                     new_title = str(retry.get("revised_title") or "").strip()
                     if new_title:
+                        others = [
+                            t for rid, t in ctx.batch_titles.items()
+                            if rid != recipe.id
+                        ]
+                        over = {
+                            w for w, idxs in _overused_title_words(
+                                others + [new_title]
+                            ).items()
+                            if w in _title_words(new_title)
+                        }
+                        if over:
+                            new_title = _strip_title_words(new_title, over)
+                            logger.info(
+                                "revised_title capped: stripped %s", sorted(over)
+                            )
                         recipe.title = new_title[:255]
+                        ctx.batch_titles[recipe.id] = recipe.title
 
         # Honesty flags (P32 C6/C7): a recipe that still lands below the floor
         # or above the calorie band ships ONLY with a visible amber chip.
@@ -3498,6 +3755,8 @@ async def _load_detail_overlap(
         if r.id not in detail_ids
     ]
     ctx.overlap_pool = pool
+    # Batch titles for the detail-stage revised_title word cap (P35 #4).
+    ctx.batch_titles = {r.id: r.title for r in batch}
 
 
 async def run_details_bg(

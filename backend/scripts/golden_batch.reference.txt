@@ -10,7 +10,7 @@ verdict: VIOLATION — J > 0.6 AND J > 0.45 with same anchor
 GOLDEN BATCH — default store: Lidl — Golden Fixture  (N=5, floor 54 g, calorie band 1100)
 ============================================================================
 flyer matching (raw → normalized): Lidl 5→6 of 8; Stop & Shop 6→7 of 9
-per-stage models: concept_fix=claude-sonnet-4-6  concepts=claude-sonnet-4-6  critic=claude-haiku-4-5  detail_fix=claude-haiku-4-5  details=claude-haiku-4-5
+per-stage models: concept_fix=claude-haiku-4-5+claude-sonnet-4-6  concepts=claude-sonnet-4-6  critic=claude-haiku-4-5  detail_fix=claude-haiku-4-5  details=claude-haiku-4-5
 stage-1 prompt blocks: taste_notes=✓  LOVED/PASSED=✓  RECENTLY SHOWN=✓  direction=✓  pins=✓  market assignments=✓
 title-word check (>2 repeats): CLEAN
 
@@ -21,7 +21,7 @@ title-word check (>2 repeats): CLEAN
     critic: score=8 verdict=ship
     flags:  ⚠ heavy: 1224 cal
 
-#2 [easy] Charred Chicken Breast Skillet
+#2 [easy] Sazon-Charred Chicken Breast Skillet
     signature: anchor='chicken breast' · format=skillet · cuisine=italian
     flavor lead: smoked paprika rub
     market pick: built around chicken breast, $1.99/lb
@@ -45,11 +45,11 @@ title-word check (>2 repeats): CLEAN
     critic: score=8 verdict=ship
     flags:  ⚠ 45g protein — below your 54g target
 
-#5 [hard] Atlantic Salmon Fillets Family Feast
-    signature: anchor='atlantic salmon fillets' · format=sheet-pan · cuisine=asian
-    flavor lead: lemon-dill
-    market pick: built around atlantic salmon fillets, $7.99/lb — at Stop & Shop
-    macros: 1016 cal / 66 g protein (calculated, cov 1.00)
+#5 [hard] Pork Loin Chops Skillet Supper
+    signature: anchor='pork loin chops' · format=skillet · cuisine=american
+    flavor lead: adobo pork rub
+    market pick: built around pork loin chops, $2.49/lb — at Stop & Shop
+    macros: 1004 cal / 68 g protein (calculated, cov 1.00)
     critic: score=8 verdict=ship
     flags:  —
 
@@ -57,10 +57,10 @@ market anchors distinct: YES
 
 pairwise Jaccard (non-staple sets, carve-outs removed):
   B1: Smoky Beef Street Tacos (batch)
-  B2: Charred Chicken Breast Skillet (batch)
+  B2: Sazon-Charred Chicken Breast Skillet (batch)
   B3: New York Strip Steak Weeknight Supper (batch)
   B4: Golden Cauliflower with Crispy Cutlets (batch)
-  B5: Atlantic Salmon Fillets Family Feast (batch)
+  B5: Pork Loin Chops Skillet Supper (batch)
   P1: Charred Cauliflower Shawarma Wraps (recent)
   P2: Charred Cauliflower Curry (recent)
   P3: Charred Beef Fajita Bowls (recent)
@@ -78,6 +78,10 @@ overlap violations shipped unannotated: 0
 owned-perishable slot: #1 Smoky Beef Street Tacos (anchored on the owned ground beef; market pick: NO)
 recency exemption: vs recent 'Charred Beef Fajita Bowls' — 2 signature axes shared incl. the beef anchor; exempt on the anchor axis (owned perishable) -> effective 1, below the 2-axis suppression. Ingredient J vs it = 0.00 (beef itself is a planned shared purchase for the saved ragu, so it's carved out — dishes must differ beyond the beef).
 feed order: tier-leading dish is the all-pantry $0 dish (stub emitted it LAST; the sort promoted it): YES
+prose price scan: 3 dollar figure(s) in narrative text; unverifiable remaining: 0 — every price matches deal_cache
+stray purchase-anchor plumbing: 'Pork Loin Chops Skillet Supper' ignored its assignment (invented $8.99/12oz) -> badge=True, built around pork loin chops $2.49/lb — at Stop & Shop; why: "Built around pork loin chops at $2.49/lb this week — at Stop & Shop."
+anchor prominence: 4/4 market picks star (anchor in title or description lead)
+hyphen/accent tokenization: 'Sazón-Charred' counts 'charred': YES
 
 ============================================================================
 GOLDEN BATCH — default store: Stop & Shop — Golden Fixture  (N=5, floor 54 g, calorie band 1100)
@@ -94,7 +98,7 @@ title-word check (>2 repeats): CLEAN
     critic: score=8 verdict=ship
     flags:  ⚠ heavy: 1224 cal
 
-#2 [easy] Charred New York Strip Steak Skillet
+#2 [easy] Sazon-Charred New York Strip Steak Skillet
     signature: anchor='new york strip steak' · format=skillet · cuisine=italian
     flavor lead: smoked paprika rub
     market pick: built around new york strip steak, $6.99/lb
@@ -130,7 +134,7 @@ market anchors distinct: YES
 
 pairwise Jaccard (non-staple sets, carve-outs removed):
   B1: Smoky Beef Street Tacos (batch)
-  B2: Charred New York Strip Steak Skillet (batch)
+  B2: Sazon-Charred New York Strip Steak Skillet (batch)
   B3: Pork Loin Chops Weeknight Supper (batch)
   B4: Charred Atlantic Salmon Fillets Burgers (batch)
   B5: Chicken Thighs Family Feast (batch)
@@ -151,6 +155,10 @@ overlap violations shipped unannotated: 0
 owned-perishable slot: #1 Smoky Beef Street Tacos (anchored on the owned ground beef; market pick: NO)
 recency exemption: vs recent 'Charred Beef Fajita Bowls' — 2 signature axes shared incl. the beef anchor; exempt on the anchor axis (owned perishable) -> effective 1, below the 2-axis suppression. Ingredient J vs it = 0.00 (beef itself is a planned shared purchase for the saved ragu, so it's carved out — dishes must differ beyond the beef).
 feed order: tier-leading dish is the all-pantry $0 dish (stub emitted it LAST; the sort promoted it): YES
+prose price scan: 3 dollar figure(s) in narrative text; unverifiable remaining: 0 — every price matches deal_cache
+stray purchase-anchor plumbing: 'Pork Loin Chops Weeknight Supper' ignored its assignment (invented $8.99/12oz) -> badge=True, built around pork loin chops $2.49/lb; why: "Same anchor, new seasoning direction for batch variety."
+anchor prominence: 4/4 market picks star (anchor in title or description lead)
+hyphen/accent tokenization: 'Sazón-Charred' counts 'charred': YES
 
 ============================================================================
 MINI-CHECKS (P34 verify-2/3) — use_soon at N=3, then beef consumed

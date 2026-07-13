@@ -98,6 +98,15 @@ _WEEKLY_LINK_BLOCK_RE = re.compile(
 )
 
 
+def fingerprint_response(r: httpx.Response) -> tuple[str, str]:
+    """(platform, evidence) for a fetched weekly-ad response — catches direct
+    PDF flyers (La Bonita serves the circular AS a PDF) before HTML checks."""
+    ct = (r.headers.get("content-type") or "").lower()
+    if "pdf" in ct or str(r.url).split("?")[0].lower().endswith(".pdf"):
+        return "pdf_direct", f"circular served as a PDF at {r.url}"
+    return fingerprint_html(r.text, str(r.url))
+
+
 def fingerprint_html(html: str, url: str) -> tuple[str, str]:
     """(platform, evidence) for a fetched weekly-ad page."""
     for platform, pattern, family in _DETECTORS:
@@ -158,7 +167,7 @@ async def discover_and_fingerprint(
             trail.append(f"{url}: {type(exc).__name__}")
             continue
         if r.status_code == 200 and r.text:
-            platform, evidence = fingerprint_html(r.text, str(r.url))
+            platform, evidence = fingerprint_response(r)
             if platform not in ("unknown", "unknown_js"):
                 return str(r.url), platform, evidence
             # The recorded source may be a homepage — hop its weekly-ad links.
@@ -171,7 +180,7 @@ async def discover_and_fingerprint(
                 if ar.status_code != 200 or not ar.text:
                     trail.append(f"{link}: HTTP {ar.status_code}")
                     continue
-                lp, le = fingerprint_html(ar.text, str(ar.url))
+                lp, le = fingerprint_response(ar)
                 if lp not in ("unknown",):
                     return str(ar.url), lp, le
                 trail.append(le)
@@ -193,7 +202,7 @@ async def discover_and_fingerprint(
         links = _weekly_links(r.text, str(r.url))
         if not links:
             # The homepage itself may host the flyer.
-            platform, evidence = fingerprint_html(r.text, str(r.url))
+            platform, evidence = fingerprint_response(r)
             if platform not in ("unknown", "unknown_js"):
                 return str(r.url), platform, evidence
             trail.append(f"{home}: no weekly-ad link")

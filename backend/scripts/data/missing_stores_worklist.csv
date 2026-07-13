@@ -1,0 +1,207 @@
+Chain,Slug,Category,Areas served,Homepage,Weekly ad / circular URL,Status,Notes
+88 Ranch Marketplace in Southern California,88_ranch_marketplace_in_southern_california,international,,,,needs review,No chain found by this exact name; likely garbled/duplicate entry.
+99 Ranch Market,99_ranch_market,international,,https://www.99ranch.com/,https://www.99ranch.com/store-ads,resolved,Live viewer at h5.awsprod.99ranch.com/stores/ad/<id>.
+Acme Markets,acme_markets,national,"Connecticut, New York, New Jersey, Pennsylvania, Delaware, Maryland",https://www.acmemarkets.com/,https://www.acmemarkets.com/weeklyad,resolved,Albertsons banner; real path /weeklyad (scraper hit /shop/deals/).
+Ai Hoa Supermarket,ai_hoa_supermarket,international,,,,closed,LA Chinatown store listed CLOSED; no active site.
+Albertsons,albertsons,national,"Connecticut, New York, New Jersey, Pennsylvania, Delaware, Maryland",https://www.albertsons.com/,https://www.albertsons.com/weeklyad,resolved,Albertsons /weeklyad pattern.
+Aldi,aldi,discount,,https://www.aldi.us/,https://www.aldi.us/weekly-specials,resolved,"US domain is aldi.us, not aldi.com."
+Amigo Supermarkets,amigo_supermarkets,local,Puerto Rico,https://www.amigo.com/,https://www.amigo.com/shopper,resolved,"PR (Pueblo). Domain amigo.com, not amigosupermarkets.com."
+Arirang Market,arirang_market,international,,https://www.arirangsupermarket.com/,https://www.arirangsupermarket.com/,resolved,Weekly sales listed on homepage; no separate ad page.
+Asian Food Center,asian_food_center,international,New Jersey,https://www.asianfoodmarkets.com/,https://www.asianfoodmarkets.com/,needs review,Best NJ match = 'Asian Food Markets' (new ad Fridays); name differs from 'Asian Food Center' - confirm.
+ASSI Plaza,assi_plaza,international,"Georgia, Illinois, Pennsylvania",https://assimarket.com/,https://assimarket.com/weeklydeals_ga55,resolved,"Rebranded 'Assi Market'; per-location deals (e.g. /weeklydeals_ga55, /weeklydeals_pa88)."
+Associated Supermarkets,associated_supermarkets,local,New York,https://www.shopassociated.com/,https://www.shopassociated.com/print-weekly-specials/,resolved,Domain shopassociated.com.
+Baker's,baker_s,national,Nebraska,https://www.bakersplus.com/,https://www.bakersplus.com/weeklyad,resolved,"Kroger banner; real domain bakersplus.com, NOT bakers.com."
+Big Y,big_y,local,"Massachusetts, Connecticut",https://www.bigy.com/,https://www.bigy.com/page/savings/promotions,resolved,403s scraper but live.
+BJ's Wholesale Club,bjs,club,,https://www.bjs.com/,https://www.bjs.com/smartsaver,resolved,Weekly flyer = 'Smart Saver'.
+BJ’s Wholesale Club,bjs_wholesale_club,national,,https://www.bjs.com/,https://www.bjs.com/smartsaver,resolved,Weekly flyer = 'Smart Saver'.
+Bravo,bravo,international,"Northeast, Florida",https://www.bravosupermarkets.com/,https://www.bravosupermarkets.com/weekly-circular,resolved,Domain bravosupermarkets.com (bravo.com is the TV network).
+Breadberry,breadberry,international,"New York, New Jersey",https://www.breadberry.com/,https://watsonsale.com/supermarkets/breadberry/,partial,"My Cloud Grocer site; no clean on-site ad link, specials mirrored on WatsOnSale."
+Brookshire Brothers,brookshire_brothers,local,Texas,https://www.brookshirebrothers.com/,https://www.brookshirebrothers.com/weeklyad,resolved,Real path /weeklyad.
+Buehler's,buehler_s,local,North-central Ohio,https://www.buehlers.com/,https://www.buehlers.com/flyers,resolved,403s scraper but live; ad at /flyers.
+Busch's Fresh Food Market,busch_s_fresh_food_market,local,Michigan,https://www.buschs.com/,https://www.buschs.com/weekly-ad,resolved,"Domain buschs.com, NOT buschsfreshfoodmarket.com."
+Busch’s Fresh Food Market,buschs_fresh_food_market,natural,southeastern Michigan,https://www.buschs.com/,https://www.buschs.com/weekly-ad,resolved,"Domain buschs.com, NOT buschsfreshfoodmarket.com."
+C-Mart Supermarket,c_mart_supermarket,international,Boston,https://www.cmartboston.com/,https://www.cmartboston.com/,resolved,Boston Chinatown; Weekly Specials on site. (supercmart.com is a different chain.)
+CAM Asian Market,cam_asian_market,international,Ohio,,,needs review,No dedicated ad site found (OH); likely Facebook-only.
+Cardenas Markets,cardenas_markets,international,,https://www.cardenasmarkets.com/,https://www.cardenasmarkets.com/shop/weekly-ad/,resolved,403s scraper but live.
+Cee Bee Food Stores,cee_bee_food_stores,local,"Kentucky, Tennessee",,,needs review,"No single corporate site; independently operated (e.g. tietgensfoodstores.com/ads, murphyscb.com/ads)."
+City Market,city_market,national,"Colorado, Utah, Wyoming",https://www.citymarket.com/,https://www.citymarket.com/weeklyad,resolved,Kroger banner.
+County Market - H.E.B,county_market_h_e_b,local,,https://www.mycountymarket.com/,https://www.mycountymarket.com/weeklyad,needs review,'County Market' = Niemann Foods (mycountymarket.com). '- H.E.B' looks like a bad merge (HEB = heb.com). Verify.
+Crest Foods,crest_foods,local,Oklahoma,https://www.crestfoodsok.com/,https://www.crestfoodsok.com/nicks-picks,resolved,Domain crestfoodsok.com; flyer = 'Nick's Picks'.
+Cub Foods,cub_foods,local,"Minnesota, one location in Freeport, Illinois",https://www.cub.com/,https://www.cub.com/weekly-ad,resolved,Domain cub.com.
+D'Agostino Supermarkets,d_agostino_supermarkets,local,New York City,https://dagnyc.com/,https://order.dagnyc.com/store/dagnyc/collections/rc-weekly-ad,resolved,Mercatus platform (dagnyc.com).
+Dierbergs Markets,dierbergs_markets,local,St. Louis area,https://www.dierbergs.com/,https://www.dierbergs.com/weekly-ads,resolved,St. Louis.
+Dillons,dillons,national,Kansas,https://www.dillons.com/,https://www.dillons.com/weeklyad,banner pattern,Kroger banner (/weeklyad).
+El Ahorro Supermarket,el_ahorro_supermarket,international,Texas,https://www.elahorro.net/,https://www.elahorro.net/en/specials,resolved,Houston Hispanic chain.
+El Pueblo,el_pueblo,international,Newark,,,needs review,Hispanic market (Newark NJ). Small independent - likely no online circular / Facebook only.
+El Rancho,el_rancho,international,,https://www.elranchoinc.com/,https://www.elranchoinc.com/ad-semanal/,resolved,El Rancho Supermercado (TX). Covers both 'El Rancho' and 'Supermercado El Rancho' rows.
+El Rey,el_rey_2,international,California,https://www.elreysuper.com/,https://www.elreysuper.com/,needs review,El Rey Supermercado (CA) - different chain from WI El Rey. Verify.
+El Rey,el_rey,international,Wisconsin,https://www.elreyfoods.com/,https://shopelreyfoods.com/,resolved,El Rey Foods (Milwaukee WI). Weekly deals via shopelreyfoods.com.
+El Río Grande Latin Market,el_rio_grande_latin_market,international,Texas,https://elriogrande.net/,https://elriogrande.net/ad/,resolved,Dallas TX (G&W Foods).
+El Super,el_super,international,"Los Angeles, Southern Nevada, Phoenix, Arizona",https://elsupermarkets.com/,https://elsupermarkets.com/weekly-ads/,resolved,Chedraui USA / El Super.
+Erewhon,erewhon,local,California,https://www.erewhonmarket.com/,,no ad,No weekly circular; promotions via app/site only. Verify.
+Evergreen,evergreen,international,"Monsey, Pomana, New York – Lakewood, New Jersey",https://www.evergreenkosher.com/,https://www.shopevergreenkosher.com/specials,resolved,Evergreen Kosher Market (Monsey NY / Lakewood NJ).
+Fei Long Market,fei_long_market,international,New York,https://fei-long-market.com/,https://fei-long-market.com/weekly-ad,resolved,Brooklyn (Sunset Park) Chinese. (NYC/NJ Chinese flyers also aggregated at chaoshiweekly.com.)
+Festival Foods,festival_foods,local,Wisconsin,https://www.festfoods.com/,https://www.festfoods.com/weekly-ad,resolved,Skogen's Festival Foods (WI). Note: separate Knowlan's Festival Foods exists in MN.
+Fiesta Mart,fiesta_mart,international,Texas,https://www.fiestamart.com/,https://www.fiestamart.com/weekly-ad,needs review,TX. Homepage solid; verify exact ad path.
+Food 4 Less,food_4_less,national,"California, Illinois, Indiana",https://www.food4less.com/,https://www.food4less.com/weeklyad,banner pattern,Kroger banner (/weeklyad).
+Food King,food_king,local,"Colorado, New Mexico, Texas",https://www.shopfoodking.com/,https://www.shopfoodking.com/weekly-ad,resolved,Lowe's Market family (CO/NM/TX).
+Food Maxx International,food_maxx_international,international,Virginia,,,needs review,VA international market (NOT the CA FoodMaxx/Save Mart chain). No confirmed site - likely Facebook only.
+Food Rite,food_rite,local,West Tennessee,https://www.myfoodrite.com/,https://www.myfoodrite.com/ads/,resolved,West TN (AWG/Webstop).
+Food Town,food_town,local,"Houston, Texas",https://www.yourfoodtown.com/,https://www.yourfoodtown.com/weekly-ad/,resolved,Houston TX.
+Foodfair,foodfair,local,"Huntington, WV, surrounding area",https://www.foodfairsupermarket.com/,https://www.foodfairsupermarket.com/weekly-ads,resolved,Huntington WV area.
+Foodland,foodland,local,Hawaii,https://www.foodland.com/,https://www.foodland.com/weekly-ads,needs review,"Hawaii (Foodland Super Market). Homepage solid; verify exact ad path. NOTE: separate 'FoodLand Supermarkets' (Southern US, row 52) is a different chain - still pending."
+FoodLand Supermarkets,foodland_supermarkets,local,"Alabama, Georgia, South Carolina, North Carolina, Tennessee, Kentucky, West Virginia, Pennsylvania, Ohio",https://www.foodlandgrocery.com/,https://www.foodlandgrocery.com/weekly-ads/,resolved,Southern US (Mitchell Grocery). Distinct from Foodland Hawaii (foodland.com).
+Foodtown,foodtown,local,"New Jersey, New York, Pennsylvania",https://www.foodtown.com/,https://shop.foodtown.com/store/foodtown-food-circus/flyers/weekly,resolved,NJ/NY/PA co-op (Mercatus).
+Fred Meyer,fred_meyer,national,"Alaska, Idaho, Oregon, Washington",https://www.fredmeyer.com/,https://www.fredmeyer.com/weeklyad,banner pattern,Kroger banner (/weeklyad).
+Fresh Encounters,fresh_encounters,local,Ohio,https://www.freshencounter.com/,,needs review,"Corporate parent (Fresh Encounter Inc / SpartanNash), not a consumer banner. Consumer stores: Community Markets, Chief, Needler's, Sack N Save, Remke. No single consumer circular."
+Fresh International Market,fresh_international_market,international,"Michigan, Indiana, Illinois, Missouri, North Carolina",https://freshimarket.com/,https://freshimarket.com/promotions/,resolved,Asian (MI/IN/IL/MO/NC). Weekly promotions Fridays.
+Fresh Thyme Market,fresh_thyme_market,natural,,https://www.freshthyme.com/,https://www.freshthyme.com/weekly-ad,needs review,Verify exact ad path.
+Fry's,fry_s,national,Arizona,https://www.frysfood.com/,https://www.frysfood.com/weeklyad,banner pattern,Kroger banner (frysfood.com /weeklyad).
+Galleria Market,galleria_market,international,Southern California,https://galleriamarket.com/,https://galleriamarket.com/blog/?cat=3,resolved,Koreatown LA. Weekly sale shared with sister 'HK Market'.
+Gelson's Markets,gelson_s_markets,local,Southern California,https://www.gelsons.com/,https://ad.gelsons.com/,resolved,SoCal premium.
+Gerbes,gerbes,national,Missouri,https://www.gerbes.com/,https://www.gerbes.com/weeklyad,banner pattern,Kroger banner (/weeklyad).
+Giant Food,giant_food,local,"Delaware, Maryland, Virginia, D.C.",https://giantfood.com/,https://giantfood.com/savings/weekly-ad,resolved,Confirmed (Landover MD Giant; giantfood.com).
+Gleiberman's Gourmet,gleiberman_s_gourmet,international,"Charlotte, North Carolina",https://www.gleibermansgourmet.com/,,needs review,Kosher gourmet market (Charlotte NC). Verify site; specials likely via site/Facebook.
+Global Food International,global_food_international,international,"Maryland, Virginia",,,needs review,'Global Food' international supermarket (MD/VA). Ambiguous/no confirmed canonical site - verify; may be Facebook only.
+Good Fortune Supermarket,good_fortune_supermarket,international,"New York, New Jersey, Virginia, Texas, Rhode Island, California",https://goodfortunesupermarket.com/,https://goodfortunesupermarket.com/,resolved,Asian (NY/NJ/VA/TX/RI/CA/MA). Weekly ad posted on site + Facebook (fb.com/hkgf001).
+Gourmet Glatt,gourmet_glatt,international,"Brooklyn, Cedarhurst, Monsey, Lakewood, Woodmere",https://gourmetglatt.com/,https://gourmetglatt.com/,resolved,"Kosher (Cedarhurst/Woodmere NY, Lakewood/Brooklyn). Weekly specials on site."
+Grand & Essex,grand_and_essex,international,New Jersey,https://www.grandandessex.com/,https://www.grandandessex.com/,needs review,Grand & Essex Market (Bergenfield NJ kosher). Verify site/ad.
+Grand Mart,grand_mart,international,"Washington, D.C., Virginia, North Carolina, Georgia",https://newgrandmartusa.com/,https://newgrandmartusa.com/,needs review,DC-metro chain rebranded as New Grand Mart (DC/MD/VA). Hampton Roads VA stores at grandmartva.com. Weekly deals on site. Original 'Grand Mart International' footprint fragmented.
+Great Wall Supermarket,great_wall_supermarket,international,"Georgia, Massachusetts, New Jersey, New York, Virginia",https://gw-supermarket.com/,https://gw-supermarket.com/,resolved,GW Supermarket (E-coast Asian). Weekly ad on site. MA stores operate as C-Mart.
+Greenland Market,greenland_market,international,,https://www.greenlandmarket.com/,https://www.greenlandmarket.com/,needs review,"Korean-American chain, Southern California. Verify domain/ad path."
+Gristedes,gristedes,local,New York City,https://www.gristedes.com/,https://www.gristedes.com/,resolved,NYC (Red Apple Group). Weekly ad on site (updates Fridays).
+H K Market,h_k_market,international,,https://hkmarket.com/,https://galleriamarket.com/blog/?cat=3,needs review,SoCal Korean; sister of Galleria Market (shared 'Galleria/HK Market' weekly sale). Verify homepage domain.
+H-E-B,h_e_b,local,"Texas, Northern Mexico",https://www.heb.com/,https://www.heb.com/weekly-ads/weekly-deals,resolved,TX. (Also relevant to the garbled 'County Market - H.E.B' entry.)
+Haggen,haggen,national,Washington,https://www.haggen.com/,https://www.haggen.com/weeklyad,banner pattern,Albertsons banner (/weeklyad).
+Hannam,hannam,international,"New Jersey, California",https://www.hannamchainusa.com/,https://www.hannamchainusa.com/,resolved,Hannam Chain (Korean; SoCal + NJ). Weekly ads page on site.
+Harris Teeter,harris_teeter,national,"Delaware, Florida, Georgia, Maryland, North Carolina, South Carolina, Virginia, District of Columbia",https://www.harristeeter.com/,https://www.harristeeter.com/weeklyad/weeklyad,resolved,Kroger banner; confirmed /weeklyad/weeklyad.
+Highland Park Markets,highland_park_markets,local,Connecticut,https://www.highlandparkmarket.com/,https://www.highlandparkmarket.com/,needs review,CT (Manchester/Farmington/Glastonbury/Suffield). Verify site/ad path.
+Hitchcock's  Markets,hitchcock_s_markets,local,Florida,https://www.myhitchcocks.com/,https://www.myhitchcocks.com/weekly-ad/,resolved,North-central FL (Alachua). Note: Chain name in source has a double space.
+Hoa Binh Supermarket,hoa_binh_supermarket,international,,,,needs review,Vietnamese (Rosemead/Garden Grove CA; also TX). No reliable e-commerce site found - weekly deals via Facebook; TX stores mirror Hong Kong Market group.
+Homeland,homeland,local,"Kansas, Oklahoma, Georgia, Texas",https://homelandstores.com/,https://homelandstores.com/flyers,resolved,"Homeland / HAC Inc (OK, KS, TX, GA)."
+Hong Kong Food Market,hong_kong_food_market,international,Louisiana,https://www.shophongkongmarket.com/,https://www.shophongkongmarket.com/weekly-ad/,resolved,Hong Kong Food Market (TX/LA Asian).
+Hong Kong Supermarket,hong_kong_supermarket,international,,,,needs review,Generic name used by several unrelated Asian markets (NYC/Atlanta/Austin/etc.). No single canonical site; TX/LA locations = shophongkongmarket.com.
+Houchens Markets,houchens_markets,local,"Kentucky, Tennessee, Ohio, Indiana, Illinois",https://www.houchens.com/,,needs review,Houchens Industries is a large parent co; supermarkets run as IGA/Food Giant/etc. No single consumer circular - identify the specific local banner.
+Hugo's,hugo_s,local,"Minnesota, North Dakota",https://www.gohugos.com/,https://shop.gohugos.com/weekly-ad,resolved,Hugo's Family Marketplace (MN/ND).
+Ideal,ideal,international,Louisiana,,,needs review,Ideal Market / Supermercado Ideal (New Orleans LA Latin/international). No confirmed circular site - likely Facebook only.
+India Bazaar/IndiaCo,india_bazaar_indiaco,international,"Texas, Illinois, Georgia",https://www.indiaco.com/,,needs review,Indian grocery (TX/IL/GA). Verify domain; Indian grocers often run promotions rather than a weekly circular.
+Island Pacific Supermarket,island_pacific_supermarket,international,"California, Nevada",https://www.islandpacificmarket.com/,https://shop.islandpacificmarket.com/weekly-ad,resolved,Filipino (CA/NV).
+J-mart,j_mart,international,New York,https://www.jmartsupermarket.com/,https://www.jmartsupermarket.com/,needs review,NYC Asian (Flushing/Bensonhurst/New Hyde Park). Verify site/ad; flyers also on chaoshiweekly.com.
+JayC,jayc,national,Indiana,https://www.jaycfoods.com/,https://www.jaycfoods.com/weeklyad,banner pattern,"Kroger banner (Jay C Food Stores, /weeklyad)."
+Jewel Osco,jewel_osco,national,"Illinois, Indiana",https://www.jewelosco.com/,https://www.jewelosco.com/weeklyad,banner pattern,Albertsons banner (/weeklyad).
+Jewel-Osco,jewel_osco_2,local,"Chicago, Illinois",https://www.jewelosco.com/,https://www.jewelosco.com/weeklyad,banner pattern,Albertsons banner (/weeklyad).
+Jon's Marketplace,jon_s_marketplace,local,Southern California,https://www.jonsmarketplace.com/,https://www.jonsmarketplace.com/weekly-ad,resolved,Greater LA int'l (JONS Fresh Marketplace).
+Kam Man Food,kam_man_food,international,"New York, New Jersey, Massachusetts",https://www.kammanmarket.com/,https://www.kammanmarket.com/,needs review,NY/NJ/MA Asian. Homepage solid; verify weekly-specials page path.
+Karns Quality Foods,karns_quality_foods,local,"Harrisburg, Pennsylvania area",https://www.karnsfoods.com/,https://www.karnsfoods.com/weekly-ad/,resolved,Central PA (Harrisburg).
+Key Food,key_food,local,New York City metro area,https://www.keyfood.com/,https://www.keyfood.com/circular,needs review,NYC-metro co-op; circulars are per-store (e.g. keyfoodgardencity.com/weekly-circular). Verify main circular path.
+King Soopers,king_soopers,national,"Colorado, Wyoming",https://www.kingsoopers.com/,https://www.kingsoopers.com/weeklyad,banner pattern,Kroger banner (/weeklyad).
+Kosher Konnection,kosher_konnection,international,New Jersey,,,needs review,Passaic NJ kosher (Main St). No clear e-commerce site found - likely no online circular / Facebook only.
+Kroger,kroger,national,"Alabama, Arkansas, Georgia, Illinois, Indiana, Kentucky, Michigan, Mississippi, Missouri, Ohio, South Carolina, Tennessee, Texas, Virginia, West Virginia",https://www.kroger.com/,https://www.kroger.com/weeklyad/weeklyad,resolved,Confirmed /weeklyad/weeklyad.
+Kuhn's Quality Foods,kuhn_s_quality_foods,local,"Pittsburgh, Pennsylvania",https://www.kuhnsmarket.com/,https://www.kuhnsmarket.com/weekly-ad,resolved,Pittsburgh PA.
+La Bonita,la_bonita,international,Southern Nevada,https://labonitasupermarkets.com/,https://labonitasupermarkets.com/specials/La_Bonita_Weekly_Deals.pdf,resolved,Las Vegas NV Hispanic. Direct-PDF weekly ad.
+La Michoacana Meat Market,la_michoacana_meat_market,international,Texas,https://www.lamichoacanameatmarket.com/,https://www.lamichoacanameatmarket.com/en/on-sale/,resolved,"TX Hispanic (Houston HQ, ~140 stores)."
+La Placita,la_placita,international,,,,needs review,Hispanic market (generic name; multiple unrelated stores). No canonical site - likely single-store / Facebook only.
+Livoti’s Old World Market,livotis_old_world_market,international,,https://www.livotisoldworldmarket.com/,https://www.livotisoldworldmarket.com/weekly-sales/,resolved,NJ Italian gourmet (Monmouth/Ocean County). Circular Thursdays.
+Lotte Plaza,lotte_plaza,international,"Maryland, Virginia",https://www.lotteplaza.com/,https://www.lotteplaza.com/weekly-sale/,resolved,Korean/Asian (MD/VA/FL). NJ stores: /nj-weekly-sale/.
+Magruder's,magruder_s,local,"Washington, D.C. area",https://www.magruders.com/,https://www.magruders.com/,resolved,DC family-owned supermarket (since 1875). Weekly ad on site (Wednesdays). Note magrudersofdc.com is the gourmet/wine e-commerce arm.
+Marc's,marc_s,local,"Cleveland, Ohio",https://www.marcs.com/,https://www.marcs.com/weeklyad,resolved,Cleveland OH discount grocery.
+Mardens,mardens,local,Maine,https://www.mardens.com/,,no ad,"Marden's Surplus & Salvage (Maine, 14 stores). Per their FAQ they do NOT publish a weekly flyer - ever-changing surplus inventory."
+Mariano's,mariano_s,national,Illinois,https://www.marianos.com/,https://www.marianos.com/weeklyad,banner pattern,Kroger/Roundy's banner (/weeklyad).
+Market Basket,market_basket,local,"Southeastern Texas, Southwestern Louisiana",https://www.marketbasket.com/,https://www.marketbasket.com/weekly-ad,resolved,Market Basket (SE TX / SW LA) - different chain from New England.
+Market Basket,market_basket_2,local,New England,https://www.shopmarketbasket.com/,https://www.shopmarketbasket.com/flyer,resolved,Demoulas Market Basket (New England). Verify flyer path.
+Market of Choice,market_of_choice,local,Oregon,https://marketofchoice.com/,https://marketofchoice.com/specials/weekly/,resolved,OR independent.
+Market Street,market_street,national,"Texas, New Mexico",https://www.marketstreetunited.com/,https://www.marketstreetunited.com/weekly-ad,needs review,Albertsons/United Family; domain marketstreetunited.com. Verify ad path.
+Met Foodmarkets,met_foodmarkets,local,"New York City, New Jersey, Massachusetts",https://www.metfoodmarkets.com/,https://www.metfoodmarkets.com/,needs review,NY/NJ/MA co-op (Met Foods). Verify site/circular path.
+Metro Supermarket,metro_supermarket,international,,,,needs review,Asian 'Metro Supermarket' - ambiguous (multiple unrelated stores; not Kroger's Metro Market). No canonical site confirmed.
+Mi Tienda,mi_tienda,international,"two stores in Houston, Texas",https://www.heb.com/,https://www.heb.com/,needs review,Mi Tienda is an H-E-B Hispanic banner (Houston). Ad likely via heb.com; verify dedicated page.
+Mitsuwa,mitsuwa,international,"New Jersey, Illinois, California, Hawaii, Texas",https://www.mitsuwa.com/,https://www.mitsuwa.com/,needs review,Japanese (CA/IL/NJ/TX/HI). Both rows = same chain. Verify weekly-ad path (per-store).
+Mitsuwa Marketplace,mitsuwa_marketplace,international,,https://www.mitsuwa.com/,https://www.mitsuwa.com/,needs review,Japanese (CA/IL/NJ/TX/HI). Both rows = same chain. Verify weekly-ad path (per-store).
+Moser's Foods,moser_s_foods,local,Missouri,https://www.mosersfoods.com/,https://www.mosersfoods.com/weekly-ads,resolved,Central Missouri (family-owned).
+Mother's Market & Kitchen,mother_s_market_and_kitchen,local,California,https://www.mothersmarket.com/,https://www.mothersmarket.com/weekly-specials,needs review,SoCal natural. Verify ad path.
+Motty's,motty_s,international,"Spring Valley, New York",,,needs review,Kosher supermarket (Spring Valley NY). Small independent - likely no online circular / Facebook only.
+Mr. Special,mr_special,local,Puerto Rico,https://www.supermercadosmrspecial.com/,https://www.supermercadosmrspecial.com/,resolved,Puerto Rico. Weekly 'shopper' on site (also mirrored at shopperspr.net).
+Nam Dae Mun Farmers Market,nam_dae_mun_farmers_market_2,international,Georgia,https://ndmmarket.com/,https://ndmmarket.com/weeklyads/,resolved,"NDM Market, Greater Atlanta int'l. (Both NDM rows = same chain.)"
+Nam Dae Mun Farmers Market,nam_dae_mun_farmers_market,international,Georgia,https://ndmmarket.com/,https://ndmmarket.com/weeklyads/,resolved,"NDM Market, Greater Atlanta int'l. (Both NDM rows = same chain.)"
+Natural Grocers,natural_grocers,natural,,https://www.naturalgrocers.com/,https://www.naturalgrocers.com/sale-flyer,needs review,Runs a monthly 'Hot Deals'/sale flyer rather than weekly. Verify path.
+New Day,new_day,international,"Spring Valley, New York",,,needs review,Kosher supermarket (Spring Valley NY). Small independent - likely no online circular / Facebook only.
+New India Bazar,new_india_bazar,international,California,https://www.newindiabazar.com/,,needs review,Indian grocery (CA/Bay Area). Verify domain; may not publish a weekly circular.
+Nijiya Market,nijiya_market,international,"California, Hawaii",https://www.nijiya.com/,https://www.nijiya.com/sale,resolved,Japanese (CA/HI).
+Northgate González Market,northgate_gonzalez_market,international,California,https://www.northgatemarket.com/,https://www.northgatemarket.com/weekly-ad,needs review,Northgate Gonzalez Market (CA). Both rows = same chain. Verify ad path.
+Northgate Market,northgate_market,international,,https://www.northgatemarket.com/,https://www.northgatemarket.com/weekly-ad,needs review,Northgate Gonzalez Market (CA). Both rows = same chain. Verify ad path.
+O-Mart,o_mart,international,"Killeen, Texas",https://www.omartusa.com/,https://www.omartusa.com/,resolved,"Korean/Asian market, Killeen TX. Weekly specials on site."
+Ocean Mart,ocean_mart,international,Utah,https://www.oceanmart.net/,https://www.oceanmart.net/,resolved,Utah's Asian supermarket chain (SLC/Sandy). Weekly deals via site + Facebook.
+Pac n Save,pac_n_save,local,Rural Nebraska,,,needs review,Pac 'N Save (rural Nebraska) - affiliated with B&R Stores (Russ's Market/Super Saver family). Verify dedicated site/ad.
+Pacific Ocean Marketplace,pacific_ocean_marketplace,international,Colorado,https://www.pacificoceanmarket.com/,https://www.pacificoceanmarket.com/,resolved,Denver CO Asian. Weekly flyers on site.
+Pantry Pride,pantry_pride,local,"St Marys, Ohio",https://pantrypridemkt.com/,https://pantrypridemkt.com/,resolved,Pantry Pride Market (St Marys OH). 'View Weekly Ad' on site.
+Presidente,presidente,international,"South Florida – Miami-Dade, Broward & Palm Beach counties",https://presidentesupermarkets.com/,https://presidentesupermarkets.com/weekly-promotions/,resolved,South FL Hispanic (Cuban-owned).
+Price Chopper,price_chopper,local,Kansas City & Des Moines metro areas,https://www.mypricechopper.com/,https://www.mypricechopper.com/savings/weekly-ad,resolved,KC/Des Moines (Ball's/McKeever's). NOTE: distinct from NY 'Price Chopper' by Golub (pricechopper.com).
+Pro's Ranch Market / Los Altos Ranch Market,pro_s_ranch_market_los_altos_ranch_market,international,"Arizona, California, New Mexico, Texas",https://www.losaltosranchmarket.com/,https://www.losaltosranchmarket.com/weekly-ad,needs review,AZ/CA/NM/TX (now Cardenas Markets group). Verify domain/ad path.
+Publix Green Wise,publix_green_wise,natural,,https://www.publix.com/,https://www.publix.com/savings/weekly-ad,banner pattern,GreenWise Market = Publix format; uses Publix weekly ad (publix.com/savings/weekly-ad).
+Publix Sabor,publix_sabor,international,,https://www.publix.com/,https://www.publix.com/savings/weekly-ad,banner pattern,Publix Sabor = Publix format; uses Publix weekly ad.
+Pueblo,pueblo,local,Puerto Rico,https://www.puebloweb.com/,https://www.puebloweb.com/shopper,resolved,Supermercados Pueblo (Puerto Rico).
+QFC,qfc,national,"Oregon, Washington",https://www.qfc.com/,https://www.qfc.com/weeklyad,banner pattern,Kroger banner (/weeklyad).
+Quality Dairy Company,quality_dairy_company,local,Mid-Michigan,https://www.qualitydairy.com/,https://www.qualitydairy.com/,needs review,Mid-Michigan (Lansing) convenience chain. Verify site; may run coupons/specials rather than a grocery circular.
+Ralphs,ralphs,national,Southern California,https://www.ralphs.com/,https://www.ralphs.com/weeklyad,banner pattern,Kroger banner (/weeklyad).
+Rancho Liborio,rancho_liborio,international,"California, Nevada, Colorado",https://www.liboriomarkets.com/,https://www.liboriomarkets.com/,needs review,Liborio Markets (CA/NV/CO Hispanic). Verify domain/ad path.
+Randalls and Tom Thumb,randalls_and_tom_thumb,national,Texas,https://www.randalls.com/ ; https://www.tomthumb.com/,https://www.randalls.com/weeklyad ; https://www.tomthumb.com/weeklyad,banner pattern,Two Albertsons banners; both /weeklyad.
+Rani's World Foods,rani_s_world_foods,international,Texas & Nevada,https://www.ranisworldfoods.com/,https://www.ranisworldfoods.com/,needs review,Indian/South Asian (TX/NV). May not publish a traditional weekly circular - verify.
+Redner's Markets,redner_s_markets,local,"Eastern Pennsylvania, also in Delaware, Maryland",https://www.rednersmarkets.com/,https://www.rednersmarkets.com/redners-weekly-ad-offers.html,resolved,Eastern PA/DE/MD.
+Remke Markets,remke_markets,local,"Cincinnati, Ohio area",https://www.remkes.com/,https://www2.remkes.com/WeeklyAd/,resolved,Cincinnati/NKY (Fresh Encounter/SpartanNash).
+Ridley's Family Markets,ridley_s_family_markets,local,"Idaho, Nevada, Utah, Wyoming",https://www.ridleymarkets.com/,https://www.ridleymarkets.com/weekly-ad,needs review,ID/NV/UT/WY. Verify domain/ad path.
+Riesbeck's,riesbeck_s,local,"West Virginia, Ohio",https://www.riesbeckfoods.com/,https://www.riesbeckfoods.com/weekly-ad,needs review,WV/OH. Verify domain/ad path.
+Rio Ranch Markets,rio_ranch_markets,international,,https://www.rioranchmarket.com/,https://www.rioranchmarket.com/,needs review,SoCal Hispanic. Per-location weekly ad. Verify domain (distinct from Rio Valley Market).
+Roche Bros,roche_bros,local,Massachusetts,https://www.rochebros.com/,https://www.rochebros.com/weekly-ad/,resolved,MA (Roche Bros/Sudbury Farms).
+Rockland Kosher,rockland_kosher,international,"Monsey, New York",https://www.rocklandkosher.com/,https://marketmavenmd.com/,needs review,"Rockland Kosher Supermarket (Monsey NY, 27 Orchard St). Verify site; circular often via WatsOnSale/MarketMaven."
+Rosauers Supermarkets,rosauers_supermarkets,local,"Idaho, Montana, Oregon, Washington",https://www.rosauers.com/,https://www.rosauers.com/weekly-ad,resolved,"ID/MT/OR/WA (also Super 1 Foods, Huckleberry's)."
+Roundy's,roundy_s,national,"Illinois, Wisconsin",https://www.roundys.com/,,needs review,"Corporate parent, not a consumer banner. Consumer stores are Pick 'n Save / Metro Market / Mariano's."
+Ruler Foods,ruler_foods,national,"Illinois, Indiana, Kentucky, Missouri, Ohio, Tennessee",https://www.rulerfoods.com/,,needs review,Kroger no-frills banner; typically does NOT publish a weekly circular. Verify.
+Sam's Club,sam_s_club,national,,https://www.samsclub.com/,,needs review,No weekly circular; uses 'Instant Savings' (samsclub.com/savings). Two rows in file.
+Sam's Club,sams_club,club,,https://www.samsclub.com/,,needs review,No weekly circular; uses 'Instant Savings' (samsclub.com/savings). Two rows in file.
+Save A Lot,save_a_lot,discount,,https://savealot.com/,https://savealot.com/weekly-ad,needs review,Verify exact ad path.
+Saver's Cost Plus,saver_s_cost_plus,international,Texas,https://savers-costplus.com/,https://savers-costplus.com/supermarket/weeklyad/,resolved,Irving/Ft Worth TX Hispanic.
+Scolari's Food and Drug,scolari_s_food_and_drug,local,"California, Nevada",https://www.scolaris.com/,,needs review,N. Nevada / CA Central Coast independent. WARNING: appears to be closing/closed - a 'final weekly ad' was posted and several NV stores show CLOSED. Verify status before use.
+Seabra Foods,seabra_foods,local,"New Jersey, South Florida, Rhode Island, Massachusetts",https://seabrafoods.com/,https://seabrafoods.com/pages/weekly-special-circulars-in-store-only,resolved,Portuguese/Latin (NJ/FL/RI/MA).
+Seafood City,seafood_city,international,"California, Hawaii, Washington, Nevada, Illinois",https://www.seafoodcity.com/,https://www.seafoodcity.com/weekly-specials/,needs review,Filipino (CA/HI/WA/NV/IL). Verify ad path.
+Seasons,seasons,international,"New York, New Jersey",https://seasonskosher.com/,https://seasonskosher.com/,resolved,Kosher (NY/NJ). Per-location 'Weekly Circular' on site.
+Seller's Brothers,seller_s_brothers,local,"Houston, Texas",https://www.sellersbros.com/,https://www.sellersbros.com/weekly-ad,needs review,Houston TX Hispanic. Verify domain/ad path.
+Sendik's Food Market,sendik_s_food_market,local,Wisconsin,https://www.sendiks.com/,https://www.sendiks.com/weekly-ad,resolved,WI (Balistreri family). Note: sendiksfinefoods.com is a separate related banner.
+Seven Mile Market,seven_mile_market,international,"Pikesville, Maryland",https://www.sevenmilemarket.com/,https://www.sevenmilemarket.com/,resolved,Kosher (Pikesville MD). Circular on site; also mirrored on WatsOnSale/MarketMavenMD.
+Shaw's and Star Market,shaw_s_and_star_market,national,"Maine, Massachusetts, New Hampshire, Rhode Island, Vermont",https://www.shaws.com/ ; https://www.starmarket.com/,https://www.shaws.com/weeklyad ; https://www.starmarket.com/weeklyad,banner pattern,Two Albertsons banners; both /weeklyad.
+Shoppers Food & Pharmacy,shoppers_food_and_pharmacy,local,"Baltimore, Washington, D.C. areas",https://www.shoppersfood.com/,https://www.shoppersfood.com/weekly-ad,needs review,Baltimore/DC (UNFI). Verify ad path.
+ShopRite,shoprite,regional,,https://www.shoprite.com/,https://www.shoprite.com/circulars,resolved,Wakefern co-op.
+Sieu Thi ABC,sieu_thi_abc,international,,,,needs review,"'Sieu Thi ABC' = ABC Supermarket, Little Saigon/Westminster CA (Vietnamese). Likely no online circular / Facebook only."
+Skyfood Supermarket,skyfood_supermarket,international,six locations in New York,https://www.skyfoodmarket.com/,https://www.skyfoodmarket.com/,needs review,NY (6 locations) Asian. Verify domain/ad; flyers also on chaoshiweekly.com.
+Sleeper's Supermarket,sleeper_s_supermarket,local,Maine,https://sleepersmarket.com/,https://sleepersmarket.com/pages/our-weekly-flyer,resolved,"Sleeper's Market (Caribou ME, family-owned since 1914; groceries + clothing)."
+Smith's Food and Drug,smith_s_food_and_drug,national,"Arizona, Idaho, Montana, Nevada, New Mexico, Utah, Wyoming",https://www.smithsfoodanddrug.com/,https://www.smithsfoodanddrug.com/weeklyad,banner pattern,Kroger banner (/weeklyad).
+Sprouts Farmers Market,sprouts_farmers_market,natural,,https://www.sprouts.com/,https://shop.sprouts.com/store/sprouts/flyers/weekly,resolved,Confirmed; also runs a monthly ad.
+Straub's Markets,straub_s_markets,local,"St. Louis, Missouri",https://www.straubs.com/,https://www.straubs.com/weekly-ad,needs review,St. Louis MO. Verify ad path.
+Subzi Bazaar,subzi_bazaar,international,"New Jersey, New York",https://thesubzimandi.com/,https://thesubzimandi.com/weeklyspecial/,needs review,South Asian (NJ/NY). Best match is 'Subzi Mandi' chain - confirm 'Subzi Bazaar' is the same operator.
+Sullivan's Foods,sullivan_s_foods,local,Northwest Illinois,https://www.sullivansfoods.net/,https://www.sullivansfoods.net/weekly-ad,resolved,NW Illinois (11 stores).
+Super Market México,super_market_mexico,international,,,,needs review,Generic name; ambiguous independent(s). No canonical site confirmed - likely single-store / Facebook only.
+SuperFresh,superfresh,local,"New York, New Jersey",https://www.superfreshfoodmarkets.com/,https://www.superfreshfoodmarkets.com/,needs review,NY/NJ (Key Food-affiliated; old A&P banner). Verify site/ad.
+Superior Super Warehouse,superior_super_warehouse,international,,https://www.superiorgrocers.com/,https://www.superiorgrocers.com/weekly-ad,needs review,= Superior Grocers (SoCal Hispanic; 'Superior Super Warehouse' is the older banner). Verify ad path.
+Supermercado El Rancho,supermercado_el_rancho,international,,https://www.elranchoinc.com/,https://www.elranchoinc.com/ad-semanal/,resolved,El Rancho Supermercado (TX). Covers both 'El Rancho' and 'Supermercado El Rancho' rows.
+Supermercados Selectos,supermercados_selectos,local,Puerto Rico,https://www.selectospr.com/,https://www.selectospr.com/,needs review,Puerto Rico (35 stores). Verify domain; shopper mirrored at shopperspr.net/selectos.
+Supersaver Foods,supersaver_foods,international,,,,needs review,Hispanic-geared banner operated by Albertsons LLC; chain now LARGELY CLOSED except a few stores in Utah (per Wikipedia). Not the Nebraska B&R 'Super Saver'. Verify remaining locations before use.
+Tenochtitlán Market,tenochtitlan_market,international,Utah,,,needs review,Small UT Hispanic (Campos family: West Valley/Midvale/Orem). No clear website - likely Facebook only.
+Terry's / El Mariachi Supermarkets,terry_s_el_mariachi_supermarkets,international,"Dallas, Fort Worth, Texas, Oklahoma City",https://www.terrysupermarket.com/,https://www.terrysupermarket.com/,needs review,DFW TX + OKC Hispanic (Terry's / El Mariachi). Weekly ad Wednesdays. Verify domain (site also seen at terrymarket.nextkernel.com).
+The Food Emporium,the_food_emporium,local,New York City area,https://www.thefoodemporium.com/,https://www.thefoodemporium.com/circular,needs review,NYC (Key Food-affiliated). Verify circular path.
+The Market Place,the_market_place,international,Brooklyn,,,needs review,Kosher (Brooklyn NY). Small independent - likely no online circular / Facebook only.
+Trader Joe's,trader_joe_s_2,natural,,https://www.traderjoes.com/,,no ad,Trader Joe's does NOT publish weekly ads/circulars (policy). Two rows in file.
+Trader Joe's,trader_joe_s,discount,,https://www.traderjoes.com/,,no ad,Trader Joe's does NOT publish weekly ads/circulars (policy). Two rows in file.
+Tresierras Supermarkets,tresierras_supermarkets,international,Southern California,https://www.tresierrasmarkets.com/,https://www.tresierrasmarkets.com/,needs review,SoCal Hispanic. Verify domain/ad path.
+Twin City Supermarket,twin_city_supermarket,international,New Jersey,https://twincitysupermarkets.com/,https://twincitysupermarkets.com/weekly-circular.html,resolved,NJ Latin (Elizabeth/Plainfield).
+Uncle Giuseppe’s,uncle_giuseppes,international,,https://uncleg.com/,https://uncleg.com/circular/,resolved,"Italian specialty (NY/NJ, 12 stores)."
+United Grocery Outlet,united_grocery_outlet,local,"Tennessee, North Carolina",https://www.myugo.com/,https://www.myugo.com/weekly-ad/,resolved,TN/NC discount grocery (UGO).
+Uwajimaya,uwajimaya,international,"Seattle, Washington, Portland, Oregon",https://www.uwajimaya.com/,https://www.uwajimaya.com/weekly-specials/,resolved,Seattle/Portland Asian.
+Vallarta Supermarkets,vallarta_supermarkets,international,California,https://vallartasupermarkets.com/,https://vallartasupermarkets.com/en/weekly-specials/,resolved,CA Latino.
+Viva Markets,viva_markets,international,Utah,,,closed,Viva Markets (Utah) is defunct - Ogden store closed; West Valley & Midvale reverted to the Campos family's Tenochtitlan banner (per Salt Lake Tribune). NOTE: unrelated 'Viva Supermarket' (vivasupermarket.com) and Oceanside CA 'Viva Market' (vivasupermercado.com) still operate.
+Vons and Pavilions,vons_and_pavilions,national,"California, Nevada",https://www.vons.com/ ; https://www.pavilions.com/,https://www.vons.com/weeklyad ; https://www.pavilions.com/weeklyad,banner pattern,Two Albertsons banners; both /weeklyad.
+Walmart Neighborhood Market,walmart_neighborhood_market,national,,https://www.walmart.com/,,needs review,Walmart discontinued the printed weekly ad; savings at walmart.com/savings.
+Walmart Walmart Neighborhood Market Sam's Club,walmart_walmart_neighborhood_market_sam_s_club,national,,,,needs review,Garbled/merged entry - drop or re-source.
+Wesley Kosher,wesley_kosher,international,"Monsey, New York",https://www.wesleykosheronline.com/,https://www.wesleykosheronline.com/,resolved,"Kosher (Monsey NY, 455 Rte 306). Specials/circular on site."
+Western Kosher,western_kosher,international,Los Angeles,https://www.westernkosher.com/,https://www.westernkosher.com/,needs review,LA kosher. Verify site/ad.
+WinCo Foods,winco_foods,discount,"Arizona, California, Oklahoma, Oregon, Idaho, Nevada, Texas, Utah, Washington",https://www.wincofoods.com/,,needs review,EDLP model; limited/region-specific ad. Verify whether a circular exists.
+Woodman's Markets,woodman_s_markets,local,"Illinois, Wisconsin",https://www.woodmans-food.com/,https://www.woodmans-food.com/weekly-flyer/,resolved,WI/IL employee-owned.
+Yoke's Fresh Market,yoke_s_fresh_market,local,"Washington, Idaho",https://www.yokesfreshmarkets.com/,https://www.yokesfreshmarkets.com/weekly-ad,resolved,WA/ID employee-owned.
+zTao Marketplace,ztao_marketplace,international,"Texas, Georgia",https://www.ztaomarketplace.com/,https://www.ztaomarketplace.com/,resolved,Asian (Plano TX; also GA). Weekly flyers on site.

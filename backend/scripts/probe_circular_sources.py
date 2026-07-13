@@ -92,6 +92,9 @@ async def fingerprint_main(slugs: list[str], limit: int | None) -> None:
             .where(
                 SupportedChain.is_active.is_(True),
                 SupportedChain.deals_status != "active",
+                # No-circular chains (Trader Joe's policy, EDLP models…) have
+                # nothing to fingerprint.
+                SupportedChain.has_weekly_circular.is_(True),
             )
             .order_by(SupportedChain.id)
         )

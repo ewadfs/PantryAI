@@ -1,26 +1,33 @@
-"""Probe deals sources for seeded chains (Prompt 24 A2).
+"""Probe deals sources for seeded chains (Prompt 24 A2 + Prompt 38 A probe v2).
 
-For every active chain, light-probe the known aggregator URL patterns
-(weeklyadnextweek.com/{slug} variants, theweeklyad.com/{slug}). The first URL
-whose page actually contains flyer-page images wins and is recorded onto
-supported_chains (source_url, source_type='aggregator', deals_status='active').
-Chains that already carry a special source hint (chain_site / structured) keep
-it and stay 'pending_source' until their bespoke fetcher is wired. Everything
-else is 'pending_source'.
+v1 (default): for every active chain, light-probe the known aggregator URL
+patterns (weeklyadnextweek.com/{slug} variants, theweeklyad.com/{slug}). The
+first URL whose page actually contains flyer-page images wins and is recorded
+onto supported_chains (source_url, source_type='aggregator',
+deals_status='active').
 
-Light GET only — we read the aggregator *index* page (to see whether flyer
-images exist) but never download the flyer pages themselves.
+v2 (--fingerprint, P38 A): for every PENDING chain, discover its weekly-ad
+page (recorded source_url, else homepage guess + on-page weekly-ad link) and
+fingerprint the serving platform from script srcs, iframe hosts, and DOM
+markers (Flipp, Quotient/ShopLocal, Webstop, Freshop/Mercatus, RedPepper,
+VTEX, direct PDF, static images, unknown-JS). platform + evidence land on
+supported_chains, a strategy hint lands on source_type, and the run ends with
+the chains-per-platform histogram — the build-priority map.
+
+Light GET only — index pages, never the flyer pages themselves.
 
 Run from backend/:
-    .venv/Scripts/python.exe scripts/probe_circular_sources.py            # all
-    .venv/Scripts/python.exe scripts/probe_circular_sources.py shoprite   # subset
-    .venv/Scripts/python.exe scripts/probe_circular_sources.py --limit 40
+    .venv/bin/python scripts/probe_circular_sources.py                 # v1 all
+    .venv/bin/python scripts/probe_circular_sources.py shoprite        # subset
+    .venv/bin/python scripts/probe_circular_sources.py --fingerprint   # v2 all
+    .venv/bin/python scripts/probe_circular_sources.py --fingerprint h_mart
 """
 
 import asyncio
 import pathlib
 import re
 import sys
+from collections import Counter
 
 import httpx
 
@@ -30,6 +37,7 @@ from sqlalchemy import select
 
 from app.database import AsyncSessionLocal
 from app.models.store import SupportedChain
+from app.services import circular_probe
 
 _UA = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -75,12 +83,81 @@ async def _probe_one(
     return chain.chain_slug, None, chain.source_type or ""
 
 
+async def fingerprint_main(slugs: list[str], limit: int | None) -> None:
+    """Probe v2 (P38 A): fingerprint every pending chain's flyer platform."""
+    async with AsyncSessionLocal() as db:
+        await circular_probe.ensure_default_profiles(db)
+        query = (
+            select(SupportedChain)
+            .where(
+                SupportedChain.is_active.is_(True),
+                SupportedChain.deals_status != "active",
+            )
+            .order_by(SupportedChain.id)
+        )
+        if slugs:
+            query = select(SupportedChain).where(
+                SupportedChain.chain_slug.in_(slugs)
+            )
+        chains = (await db.execute(query)).scalars().all()
+        if limit:
+            chains = chains[:limit]
+
+        sem = asyncio.Semaphore(_CONCURRENCY)
+        async with httpx.AsyncClient(
+            headers={"User-Agent": circular_probe.UA},
+            follow_redirects=True, timeout=_TIMEOUT,
+        ) as client:
+            async def _one(ch):
+                async with sem:
+                    try:
+                        return ch, await circular_probe.discover_and_fingerprint(
+                            client, ch
+                        )
+                    except Exception as exc:  # noqa: BLE001 — isolate per chain
+                        return ch, (None, "unknown", f"probe error: {exc}")
+
+            results = await asyncio.gather(*(_one(ch) for ch in chains))
+
+        hist: Counter = Counter()
+        for ch, (url, platform, evidence) in results:
+            ch.platform = platform
+            ch.platform_evidence = evidence[:2000]
+            # Pending chains only run here — a freshly-resolved weekly-ad URL
+            # beats a stale recorded one (H Mart's recorded /weeklyad 404s;
+            # the fingerprint resolves the live /weekly-ads).
+            if url:
+                ch.source_url = url
+            strategy = circular_probe.STRATEGY_FOR_PLATFORM.get(platform)
+            if strategy and ch.source_type in (None, "", "chain_site"):
+                ch.source_type = strategy
+            hist[platform] += 1
+        await db.commit()
+
+    total = len(chains)
+    print(f"\n=== Probe v2 — platform fingerprints ({total} pending chains) ===")
+    print("chains per platform (build-priority map):")
+    for platform, n in hist.most_common():
+        strategy = circular_probe.STRATEGY_FOR_PLATFORM.get(platform, "—")
+        print(f"  {n:>4}  {platform:<20} -> strategy: {strategy}")
+    print("\nsample evidence:")
+    shown: set = set()
+    for ch, (url, platform, evidence) in results:
+        if platform in shown or platform == "unknown":
+            continue
+        shown.add(platform)
+        print(f"  [{platform}] {ch.chain_slug}: {evidence[:120]}")
+
+
 async def main() -> None:
     args = [a for a in sys.argv[1:] if not a.startswith("--")]
     limit = None
     for a in sys.argv[1:]:
         if a.startswith("--limit"):
             limit = int(a.split("=")[-1]) if "=" in a else int(sys.argv[sys.argv.index(a) + 1])
+    if "--fingerprint" in sys.argv:
+        await fingerprint_main(args, limit)
+        return
 
     async with AsyncSessionLocal() as db:
         query = select(SupportedChain).where(SupportedChain.is_active.is_(True))

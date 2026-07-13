@@ -17,6 +17,7 @@ from decimal import Decimal, InvalidOperation
 from io import BytesIO
 from typing import Any
 
+import httpx
 from anthropic import AsyncAnthropic
 from PIL import Image
 from sqlalchemy import delete, func, select
@@ -769,6 +770,9 @@ class CircularExtractor:
     ) -> dict:
         """Fetch + extract one chain×region circular; returns a summary dict."""
         slug = chain.chain_slug
+        # Structured chains (P38 C6) parse deals directly — no pages, no vision.
+        if deal_fetcher.strategy_for(chain) == "structured":
+            return await self._process_structured(db, chain, region_key)
         fetcher = deal_fetcher.CircularFetcher()
         fetch = await fetcher.fetch_circular(db, chain, region_key)
         await db.commit()
@@ -785,6 +789,47 @@ class CircularExtractor:
             "matched": result["matched"], "regular_price": result["regular_price"],
         }
 
+    async def _process_structured(
+        self, db: AsyncSession, chain: SupportedChain, region_key: str
+    ) -> dict:
+        """Structured strategy: raw deal dicts -> deal_cache, vision skipped."""
+        fetch, raw_deals = await deal_fetcher.fetch_structured_deals(
+            db, chain, region_key
+        )
+        if fetch.status == "failed":
+            await db.commit()
+            return {
+                "chain": chain.chain_slug, "region": region_key,
+                "status": "failed", "pages": 0, "deals": 0, "matched": 0,
+                "error": fetch.error_message,
+            }
+        await ingredient_matcher.preload(db)
+        today = date.today()
+        stale = delete(DealCache).where(
+            DealCache.valid_to < today, DealCache.region_key == region_key
+        )
+        await db.execute(stale)
+        rows: list[DealCache] = []
+        matched = 0
+        for raw in raw_deals:
+            row = self._build_deal(
+                raw, chain_id=chain.id, fetch_id=fetch.id,
+                valid_from=fetch.valid_from, valid_to=fetch.valid_to,
+                page_number=0, region_key=region_key,
+            )
+            if row is None:
+                continue
+            if row.matched_ingredient_id is not None:
+                matched += 1
+            rows.append(row)
+        db.add_all(rows)
+        await db.commit()
+        return {
+            "chain": chain.chain_slug, "region": region_key,
+            "status": "success", "pages": 0, "deals": len(rows),
+            "matched": matched, "regular_price": 0,
+        }
+
     async def activate_region(
         self, db: AsyncSession, chain_id: int, region_key: str, zip_code: str | None = None
     ) -> dict:
@@ -799,17 +844,93 @@ class CircularExtractor:
         today = date.today()
         if await self._combo_has_valid_fetch(db, chain_id, region_key, today):
             return {"chain": chain.chain_slug, "region": region_key, "status": "skipped"}
-        if chain.deals_status != "active" and not chain.source_url:
+        if chain.deals_status != "active":
+            # Demand wiring (P38 D7): log the demand, then immediately try to
+            # EARN the activation — fingerprint the chain's weekly ad, resolve
+            # a strategy, fetch, extract. Success flips deals_status to active
+            # and the user's "coming soon" badge resolves on their next load;
+            # failure keeps the evidence for manual review, and the manual
+            # circular-upload endpoint remains the final fallback.
             await regions.log_store_request(
                 db, chain_id=chain_id, chain_slug=chain.chain_slug,
                 region_key_val=region_key, zip_code=zip_code,
             )
             await db.commit()
-            return {
-                "chain": chain.chain_slug, "region": region_key,
-                "status": "pending_source",
-            }
+            return await self.attempt_activation(db, chain, region_key)
         return await self.process_combo(db, chain, region_key)
+
+    async def attempt_activation(
+        self, db: AsyncSession, chain: SupportedChain, region_key: str
+    ) -> dict:
+        """Try to activate a pending chain end-to-end (P38 D7).
+
+        fingerprint -> strategy -> fetch -> extract. Success flips
+        ``deals_status`` to 'active'; failure records the evidence on the
+        chain row and leaves it pending_source. Never raises.
+        """
+        from app.services import circular_probe  # local: avoid import cycle
+
+        slug = chain.chain_slug
+        try:
+            await circular_probe.ensure_default_profiles(db)
+            # Fingerprint when we don't already know the platform.
+            if not chain.platform:
+                async with httpx.AsyncClient(
+                    headers={"User-Agent": circular_probe.UA},
+                    follow_redirects=True, timeout=15.0,
+                ) as client:
+                    url, platform, evidence = (
+                        await circular_probe.discover_and_fingerprint(client, chain)
+                    )
+                chain.platform = platform
+                chain.platform_evidence = evidence[:2000]
+                if url and not chain.source_url:
+                    chain.source_url = url
+                if chain.source_type in (None, "", "chain_site"):
+                    strategy = circular_probe.STRATEGY_FOR_PLATFORM.get(platform)
+                    if strategy:
+                        chain.source_type = strategy
+                await db.commit()
+
+            result = await self.process_combo(db, chain, region_key)
+            if result.get("status") in ("success", "partial") and result.get(
+                "deals", 0
+            ) > 0:
+                chain.deals_status = "active"
+                await db.commit()
+                logger.info(
+                    "Demand activation SUCCEEDED for %s (%s): %s deals",
+                    slug, region_key, result.get("deals"),
+                )
+                result["activated"] = True
+                return result
+            # Keep the failure evidence for manual review.
+            why = result.get("error") or (
+                "no deals extracted" if not result.get("deals")
+                else result.get("status")
+            )
+            chain.platform_evidence = (
+                f"{chain.platform_evidence or ''} | activation failed: {why}"
+            )[:2000]
+            await db.commit()
+            result["activated"] = False
+            return result
+        except Exception as exc:  # noqa: BLE001 — demand activation is best-effort
+            await db.rollback()
+            logger.warning("Demand activation errored for %s: %s", slug, exc)
+            try:
+                chain.platform_evidence = (
+                    f"{chain.platform_evidence or ''} | activation error: "
+                    f"{type(exc).__name__}: {exc}"
+                )[:2000]
+                await db.commit()
+            except Exception:  # noqa: BLE001
+                await db.rollback()
+            return {
+                "chain": slug, "region": region_key,
+                "status": "pending_source", "activated": False,
+                "error": f"{type(exc).__name__}: {exc}",
+            }
 
     async def run_pipeline(
         self,

@@ -45,12 +45,44 @@ class SupportedChain(Base):
     google_places_query: Mapped[str | None] = mapped_column(String(200))
     # Deals source resolved by the probe.
     source_url: Mapped[str | None] = mapped_column(String(500))
-    # 'aggregator' | 'chain_site' | 'structured' | None
+    # Fetch strategy: 'aggregator' | 'headless' | 'pdf' | 'static_images' |
+    # 'structured' | 'chain_site' (legacy hint -> headless) | None.
     source_type: Mapped[str | None] = mapped_column(String(20))
     # 'active' once a source is known, else 'pending_source'.
     deals_status: Mapped[str] = mapped_column(
         String(20), nullable=False, server_default=text("'pending_source'")
     )
+    # Probe v2 fingerprint (P38 A): which viewer platform serves this chain's
+    # weekly ad ('flipp', 'quotient_shoplocal', 'webstop', 'freshop_mercatus',
+    # 'redpepper', 'vtex', 'pdf_direct', 'static_images', 'unknown_js', ...)
+    # and the evidence string that proved it (matched script src / iframe host
+    # / DOM marker, or the failure trail for manual review).
+    platform: Mapped[str | None] = mapped_column(String(40))
+    platform_evidence: Mapped[str | None] = mapped_column(Text)
+
+
+class PlatformProfile(Base):
+    """Viewer hints for one flyer-platform family (P38 B5).
+
+    One profile serves every chain fingerprinted onto that platform: how the
+    viewer paginates and which selectors find the next button / page container.
+    """
+
+    __tablename__ = "platform_profiles"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    platform: Mapped[str] = mapped_column(String(40), unique=True, nullable=False)
+    # 'paginated' (next-button loop) or 'scroll' (segmented long capture).
+    viewer_mode: Mapped[str] = mapped_column(String(12), nullable=False)
+    # Substring identifying the viewer iframe URL (capture inside that frame).
+    frame_url_pattern: Mapped[str | None] = mapped_column(String(200))
+    ready_selector: Mapped[str | None] = mapped_column(String(300))
+    next_selector: Mapped[str | None] = mapped_column(String(300))
+    page_selector: Mapped[str | None] = mapped_column(String(300))
+    max_pages: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default=text("24")
+    )
+    notes: Mapped[str | None] = mapped_column(Text)
 
 
 class StoreLocation(Base):

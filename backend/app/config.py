@@ -93,6 +93,12 @@ class Settings(BaseSettings):
     # exposing it is a toggle, not a code change.
     expose_circular_viewer: bool = True
 
+    # Headless capture worker (P38 B): the separate Playwright Railway service
+    # that turns JS flyer viewers into page images. Empty = strategy disabled
+    # (headless fetches fail cleanly and their chains stay pending_source).
+    headless_worker_url: str = ""
+    headless_worker_timeout: int = 240
+
     # CORS — comma-separated *extra* origins, merged with _DEFAULT_CORS_ORIGINS.
     # A bare "*" is ignored because it cannot be combined with credentials.
     cors_origins: str = ""

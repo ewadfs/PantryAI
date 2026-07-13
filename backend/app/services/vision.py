@@ -38,7 +38,12 @@ logger = logging.getLogger(__name__)
 _MAX_CONCURRENT_SCANS = 3
 # Message Batches API polling for latency-insensitive circular extraction.
 _BATCH_POLL_S = 10
-_BATCH_MAX_WAIT_S = 900  # 15 min ceiling; circular batches finish in a few
+# Ceiling for Batches API polling. Batches usually end in minutes, but under
+# load Anthropic can take much longer — abandoning at 15 min threw away paid
+# extractions (observed live: two batches "did not finish in 900s" and their
+# combos served zero deals). An hour keeps the background task cheap while
+# outlasting realistic queue delays.
+_BATCH_MAX_WAIT_S = 3600
 
 _PROMPT = """You are a kitchen inventory assistant. Analyze this photo of a \
 refrigerator, freezer, or pantry and identify the food items you can see.

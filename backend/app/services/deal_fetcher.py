@@ -99,8 +99,15 @@ def strategy_for(chain: SupportedChain) -> str:
         st = circular_probe.STRATEGY_FOR_PLATFORM.get(chain.platform or "", "headless")
     if st in ("headless", "pdf", "static_images", "structured", "aggregator"):
         return st
-    if chain.platform:
-        return circular_probe.STRATEGY_FOR_PLATFORM.get(chain.platform, "aggregator")
+    if chain.platform and chain.platform in circular_probe.STRATEGY_FOR_PLATFORM:
+        return circular_probe.STRATEGY_FOR_PLATFORM[chain.platform]
+    if chain.source_url and "weeklyadnextweek" not in chain.source_url:
+        # A researched chain-site URL with no recognized platform is usually a
+        # bot-wall (403s httpx, renders in a browser — Big Y, Buehler's,
+        # Cardenas per the worklist) or an unclassified JS viewer: the
+        # headless worker is the right default, and failure still degrades to
+        # pending_source.
+        return "headless"
     return "aggregator"
 
 

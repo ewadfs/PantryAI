@@ -24,7 +24,7 @@ from app.schemas.deal import (
     RefreshRequest,
     RefreshResponse,
 )
-from app.services import storage
+from app.services import deal_fetcher, storage
 from app.services.auth import get_current_user
 from app.services.vision import CircularExtractor
 
@@ -77,6 +77,86 @@ async def _region_state(
         return "ready"
     # Active chain, no valid deals yet → activation is (or should be) in flight.
     return "loading"
+
+
+@router.get("/audit")
+async def freshness_audit(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> list[dict]:
+    """Circular-freshness audit over every chain×region with ≥1 saved user
+    store: latest fetch metadata, current-valid deal count, resolved strategy,
+    and staleness flags. Read-only; feeds the ops audit."""
+    today = date.today()
+    combos = (
+        await db.execute(
+            select(
+                StoreLocation.chain_id, StoreLocation.region_key,
+                func.count(func.distinct(UserStore.user_id)).label("users"),
+            )
+            .join(UserStore, UserStore.store_location_id == StoreLocation.id)
+            .where(StoreLocation.region_key.isnot(None))
+            .group_by(StoreLocation.chain_id, StoreLocation.region_key)
+        )
+    ).all()
+    out: list[dict] = []
+    for chain_id, region_key, users in combos:
+        chain = await db.get(SupportedChain, chain_id)
+        if chain is None:
+            continue
+        latest_ok = await db.scalar(
+            select(CircularFetch)
+            .where(
+                CircularFetch.chain_id == chain_id,
+                CircularFetch.region_key == region_key,
+                CircularFetch.status.in_(("success", "partial")),
+            )
+            .order_by(CircularFetch.fetched_at.desc())
+            .limit(1)
+        )
+        latest_any = await db.scalar(
+            select(CircularFetch)
+            .where(
+                CircularFetch.chain_id == chain_id,
+                CircularFetch.region_key == region_key,
+            )
+            .order_by(CircularFetch.fetched_at.desc())
+            .limit(1)
+        )
+        deal_count = await db.scalar(
+            select(func.count()).select_from(DealCache).where(
+                DealCache.chain_id == chain_id,
+                DealCache.region_key == region_key,
+                DealCache.valid_to >= today,
+            )
+        )
+        f = latest_ok
+        out.append({
+            "chain": chain.chain_name,
+            "slug": chain.chain_slug,
+            "region": region_key,
+            "users": users,
+            "deals_status": chain.deals_status,
+            "strategy": deal_fetcher.strategy_for(chain),
+            "platform": chain.platform,
+            "latest_success": None if f is None else {
+                "fetched_at": f.fetched_at.isoformat(),
+                "valid_from": f.valid_from.isoformat() if f.valid_from else None,
+                "valid_to": f.valid_to.isoformat() if f.valid_to else None,
+                "pages": f.page_count,
+                "pending_batch_id": f.pending_batch_id,
+            },
+            "latest_attempt": None if latest_any is None else {
+                "fetched_at": latest_any.fetched_at.isoformat(),
+                "status": latest_any.status,
+                "error": (latest_any.error_message or "")[:160] or None,
+            },
+            "current_valid_deals": int(deal_count or 0),
+            "expired": bool(f and f.valid_to and f.valid_to < today),
+            "no_deals": not deal_count,
+        })
+    out.sort(key=lambda r: (not r["no_deals"] and not r["expired"], r["slug"]))
+    return out
 
 
 @router.post("/refresh", response_model=RefreshResponse)

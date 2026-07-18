@@ -1083,6 +1083,30 @@ class CircularExtractor:
                         {"chain": slug, "region": region_key, "status": "skipped"}
                     )
                     continue
+                # Cost-bleed guard (freshness-audit finding): a page that
+                # captures fine but extracts ZERO deals (Patel's multi-region
+                # gallery with no local flyer this week) must not be
+                # re-captured and re-paid every cycle. One attempt per ~2 days
+                # on the cron; explicit demand activation can still force it.
+                recent_empty = await db.scalar(
+                    select(CircularFetch).where(
+                        CircularFetch.chain_id == chain_id,
+                        CircularFetch.region_key == region_key,
+                        CircularFetch.status.in_(("success", "partial")),
+                        CircularFetch.pending_batch_id.is_(None),
+                        CircularFetch.fetched_at
+                        > datetime.now(timezone.utc) - timedelta(hours=47),
+                        ~select(DealCache.id)
+                        .where(DealCache.fetch_id == CircularFetch.id)
+                        .exists(),
+                    )
+                )
+                if recent_empty is not None:
+                    summary.append(
+                        {"chain": slug, "region": region_key,
+                         "status": "empty_recent_skip"}
+                    )
+                    continue
                 summary.append(await self.process_combo(db, chain, region_key))
             except Exception as exc:  # noqa: BLE001 - isolate per-combo failures
                 await db.rollback()

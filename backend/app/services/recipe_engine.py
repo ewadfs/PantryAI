@@ -858,6 +858,12 @@ _PROTEIN_NAME_TOKENS = {
     "chicken", "beef", "pork", "salmon", "shrimp", "fish", "turkey", "lamb",
     "steak", "cod", "tilapia", "tuna", "tofu", "tempeh", "sausage", "bacon",
     "scallop", "crab", "lobster", "duck",
+    # International staples (P43): the H Mart/Patel flyers speak these — a
+    # primary protein must be recognized as one even before it's enriched.
+    "pollock", "roe", "clam", "clams", "mussel", "mussels", "squid",
+    "octopus", "eel", "paneer", "kalbi", "galbi", "bulgogi", "anchovy",
+    "mackerel", "halibut", "trout", "ham", "chorizo", "brisket", "veal",
+    "natto", "egg", "eggs", "dumpling", "dumplings",
 }
 
 
@@ -4141,14 +4147,43 @@ def _reconcile_and_compute(
     return ingredients, _model_nutrition(data), computed
 
 
+def _protein_gap(computed: dict | None, anchor_name: str | None) -> list[str]:
+    """P43 A1: the recipe's protein-dense ingredients that the computation
+    could NOT match with macros. Protein-dense = a protein-token/category
+    name, or the concept's own anchor — if any of these are unmatched, the
+    mass-coverage sum is tallying side dishes and must not be authoritative."""
+    if not computed:
+        return []
+    anchor = (anchor_name or "").strip().lower()
+    gaps: list[str] = []
+    for nm in computed.get("unmatched") or []:
+        low = str(nm).strip().lower()
+        if not low:
+            continue
+        is_anchor = bool(anchor) and (anchor in low or low in anchor)
+        if is_anchor or _is_protein_ingredient(nm):
+            gaps.append(nm)
+    return gaps
+
+
 def _effective_nutrition(
-    model_nut: dict | None, computed: dict | None
+    model_nut: dict | None,
+    computed: dict | None,
+    protein_gap: list[str] | None = None,
 ) -> tuple[dict | None, float | None]:
-    """Policy (P28 B3): when deterministic coverage ≥ threshold, the COMPUTED
-    figure (labeled 'calculated') replaces the model estimate everywhere and
-    drives the protein floor; below it we keep the model numbers ('est'). Never
-    blended. Returns (nutrition_dict_to_store, authoritative_protein_g)."""
-    if computed and computed.get("coverage", 0) >= nutrition.COVERAGE_THRESHOLD:
+    """Policy (P28 B3 + P43 A1): computed replaces the model estimate only
+    when BOTH hold — mass coverage ≥ threshold AND every protein-dense
+    ingredient is itself matched (``protein_gap`` empty). A recipe whose
+    primary protein is unmatched ships model-estimated ('est'), with the gap
+    names stored as ``nutrition_gap`` (the enrichment worklist). When the
+    protein IS matched and only minor items aren't, computed stands exactly
+    as before. Never blended. Returns (nutrition_dict, authoritative_protein)."""
+    gap = list(protein_gap or [])
+    if (
+        computed
+        and computed.get("coverage", 0) >= nutrition.COVERAGE_THRESHOLD
+        and not gap
+    ):
         final = {
             "calories": computed["calories"],
             "protein_g": computed["protein_g"],
@@ -4165,11 +4200,13 @@ def _effective_nutrition(
             protein = float(model_nut["protein_g"])
         except (TypeError, ValueError):
             protein = None
+    if model_nut is not None and gap:
+        model_nut = {**model_nut, "nutrition_gap": gap}
     if model_nut is None and computed:
         # P39 A1: the detail response carried no usable estimate. Never let the
         # Stage-1 concept claim survive as the panel next to computed figures —
         # ship the low-coverage compute, honestly labeled as an estimate.
-        return {
+        out = {
             "calories": computed["calories"],
             "protein_g": computed["protein_g"],
             "carbs_g": computed["carbs_g"],
@@ -4177,7 +4214,10 @@ def _effective_nutrition(
             "fiber_g": computed["fiber_g"],
             "source": "est",
             "coverage": computed["coverage"],
-        }, computed["protein_g"]
+        }
+        if gap:
+            out["nutrition_gap"] = gap
+        return out, computed["protein_g"]
     return model_nut, protein
 
 
@@ -4567,7 +4607,10 @@ async def _regen_failed_slot(
     )
     d = detail if isinstance(detail, dict) else {}
     ings, model_nut, computed = _reconcile_and_compute(d, recipe, ctx)
-    final_nut, new_protein = _effective_nutrition(model_nut, computed)
+    final_nut, new_protein = _effective_nutrition(
+        model_nut, computed,
+        _protein_gap(computed, c.get("anchor_ingredient")),
+    )
     return d, ings, final_nut, new_protein, _calories_of(final_nut)
 
 
@@ -4609,7 +4652,19 @@ async def _fill_details(
     for i, (recipe, res) in enumerate(zip(recipes, results)):
         data = res if isinstance(res, dict) else {}
         ingredients, model_nut, computed = _reconcile_and_compute(data, recipe, ctx)
-        final_nut, protein = _effective_nutrition(model_nut, computed)
+        anchor = (
+            (recipe.signature_json or {}).get("anchor_ingredient")
+            if isinstance(recipe.signature_json, dict) else None
+        )
+        gap = _protein_gap(computed, anchor)
+        if gap:
+            # P43 A1: the enrichment worklist — one line per shipped gap.
+            logger.warning(
+                "nutrition_gap for %r: primary protein unmatched %s "
+                "(coverage %.2f would otherwise have shipped as calculated)",
+                recipe.title, gap, (computed or {}).get("coverage", 0),
+            )
+        final_nut, protein = _effective_nutrition(model_nut, computed, gap)
         calories = _calories_of(final_nut)
 
         # P39 A2: a COMPUTED protein more than 25% under the floor is a failed
@@ -4689,7 +4744,9 @@ async def _fill_details(
             )
             if isinstance(retry, dict) and retry:
                 r_ings, r_model, r_comp = _reconcile_and_compute(retry, recipe, ctx)
-                r_final, r_protein = _effective_nutrition(r_model, r_comp)
+                r_final, r_protein = _effective_nutrition(
+                    r_model, r_comp, _protein_gap(r_comp, anchor)
+                )
                 r_cal = _calories_of(r_final)
                 r_purch = (
                     _detail_purchases(r_ings, ctx) if ctx.pantry_mode else []
@@ -4747,8 +4804,20 @@ async def _fill_details(
         # re-run on the COMPUTED numbers. A recipe that still lands below the
         # floor, above the calorie band, or over the pantry-mode purchase
         # budget ships ONLY with a visible amber chip.
+        # P43 A1: a panel that is only a partial computation shipped as "est"
+        # (model gave no estimate AND the primary protein is unmatched) must
+        # not drive chips or prose rewrites — its numbers are known-partial.
+        partial_only = bool(
+            isinstance(final_nut, dict)
+            and final_nut.get("nutrition_gap")
+            and final_nut.get("source") == "est"
+            and "coverage" in final_nut
+        )
         enf = enforce_computed(
-            recipe, ingredients, protein, calories, floor, cap, ctx.calorie_target
+            recipe, ingredients,
+            None if partial_only else protein,
+            None if partial_only else calories,
+            floor, cap, ctx.calorie_target,
         )
         if enf.get("badge_dropped"):
             logger.warning(

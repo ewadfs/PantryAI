@@ -211,3 +211,13 @@ week plan @ N=4: 4 concepts, week_plan flags: [True, True, True, True]
   deal stacked across >=2 meals: YES (chicken breast)
   Discover feed untouched by week batch: YES
 
+============================================================================
+PROTEIN-GATE FIXTURE — P43 computed-vs-est policy
+============================================================================
+case 1 — anchor unmatched: coverage=1.00 (would have passed the old mass-only gate: YES)
+  nutrition_gap: ['fermented skate wing']
+  verdict: source=est protein=42.0g (model estimate held; computed 19.5g rejected)
+  floor chip on the phantom figure: NO (est 42.0g >= floor)
+case 2 — minor item unmatched: coverage=1.00 gap=[] -> source=calculated protein=89.7g (computed stands)
+case 3 — enriched kalbi: coverage=1.00 gap=[] -> source=calculated protein=65.0g
+

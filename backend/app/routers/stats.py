@@ -294,3 +294,113 @@ async def funnel(
             "returns": returns.get(week, {"d1": 0, "d7": 0}),
         })
     return {"cohorts": out}
+
+
+@router.post("/stats/recompute-nutrition")
+async def recompute_nutrition(
+    payload: dict | None = None,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """P43 B5 ops tool: re-run the deterministic nutrition computation over a
+    user's current-week READY recipes (post-enrichment) under the
+    protein-aware gate, refresh the honesty chips, and report before/after.
+    Admin-gated like /stats/funnel; targets the CALLER unless an admin passes
+    {"sub": ...}. No model calls — deterministic and cheap."""
+    import math
+
+    from fastapi import HTTPException, status as _status
+
+    from app.config import settings as _settings
+    from app.models.recipe import Recipe
+    from app.services import ingredient_matcher, nutrition, recipe_engine
+
+    admins = [
+        e.strip().lower() for e in (_settings.admin_emails or "").split(",")
+        if e.strip()
+    ]
+    if admins and (current_user.email or "").lower() not in admins:
+        raise HTTPException(status_code=_status.HTTP_403_FORBIDDEN,
+                            detail="Admin only.")
+
+    target = current_user
+    sub = (payload or {}).get("sub")
+    if sub:
+        target = (
+            await db.execute(select(User).where(User.supabase_user_id == sub))
+        ).scalar_one_or_none() or current_user
+
+    await ingredient_matcher.preload(db)
+    await nutrition.preload(db)
+
+    week_start = recipe_engine.week_start_for(datetime.now(timezone.utc).date())
+    rows = (
+        (
+            await db.execute(
+                select(Recipe)
+                .join(WeekRecipe, WeekRecipe.recipe_id == Recipe.id)
+                .where(
+                    WeekRecipe.user_id == target.id,
+                    WeekRecipe.week_start == week_start,
+                )
+                .order_by(Recipe.id)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    floor = math.ceil(target.protein_target / 3) if target.protein_target else 0
+    cap = round(target.calorie_target * 0.55) if target.calorie_target else 0
+    report = []
+    for r in rows:
+        if r.status != "ready" or not r.ingredients_json:
+            report.append({"id": r.id, "title": r.title, "skipped": r.status})
+            continue
+        before = dict(r.nutrition_json or {})
+        before_flags = dict(r.quality_flags_json or {})
+        anchor = (
+            (r.signature_json or {}).get("anchor_ingredient")
+            if isinstance(r.signature_json, dict) else None
+        )
+        computed = nutrition.compute(r.ingredients_json, r.servings)
+        gap = recipe_engine._protein_gap(computed, anchor)
+        model_nut = before if before.get("source") == "est" else None
+        if model_nut is not None:
+            model_nut = {
+                k: v for k, v in model_nut.items()
+                if k in ("calories", "protein_g", "carbs_g", "fat_g", "fiber_g")
+            } | {"source": "est"}
+        final, protein = recipe_engine._effective_nutrition(model_nut, computed, gap)
+        if final is not None:
+            r.nutrition_json = final
+        partial_only = bool(
+            isinstance(final, dict) and final.get("nutrition_gap")
+            and final.get("source") == "est" and "coverage" in final
+        )
+        calories = (final or {}).get("calories")
+        enf = recipe_engine.enforce_computed(
+            r, r.ingredients_json or [],
+            None if partial_only else protein,
+            None if partial_only else calories,
+            floor, cap, target.calorie_target or 0,
+        )
+        r.quality_flags_json = enf["flags"] or None
+        report.append({
+            "id": r.id,
+            "title": r.title,
+            "anchor": anchor,
+            "before": {
+                "protein_g": before.get("protein_g"),
+                "source": before.get("source"),
+                "flags": sorted(before_flags),
+            },
+            "after": {
+                "protein_g": (final or {}).get("protein_g"),
+                "source": (final or {}).get("source"),
+                "coverage": (computed or {}).get("coverage"),
+                "nutrition_gap": (final or {}).get("nutrition_gap"),
+                "flags": sorted(enf["flags"] or {}),
+            },
+        })
+    await db.flush()
+    return {"week_start": week_start.isoformat(), "recipes": report}

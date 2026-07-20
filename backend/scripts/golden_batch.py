@@ -2127,6 +2127,76 @@ async def week_checks() -> None:
               f"{'YES' if newest_after == newest_daily else 'NO'}")
 
 
+async def nutrition_gate_checks() -> None:
+    """P43 protein-gate fixture: the computed-replaces-estimate policy must
+    require the PRIMARY PROTEIN itself to be matched — never let side dishes
+    carry the coverage sum while the anchor is invisible (the live 2.7g
+    'Korean BBQ beef' case: an unweighable unmatched protein didn't even
+    dent mass coverage). Deterministic; no model calls."""
+    from app.services import nutrition
+
+    print("=" * 76)
+    print("PROTEIN-GATE FIXTURE — P43 computed-vs-est policy")
+    print("=" * 76)
+    async with AsyncSessionLocal() as db:
+        await ingredient_matcher.preload(db)
+        await nutrition.preload(db)
+
+    model_est = {"calories": 640, "protein_g": 42.0, "carbs_g": 45.0,
+                 "fat_g": 24.0, "source": "est"}
+
+    # (1) PRIMARY PROTEIN UNMATCHED: the anchor line is unweighable AND
+    # unknown, the matched sides alone clear 70% mass coverage.
+    ings = [
+        {"name": "fermented skate wing", "quantity": 1, "unit": "package"},
+        {"name": "white rice", "quantity": 2, "unit": "cup"},
+        {"name": "broccoli", "quantity": 1, "unit": "lb"},
+        {"name": "olive oil", "quantity": 2, "unit": "tbsp"},
+    ]
+    computed = nutrition.compute(ings, 2)
+    gap = recipe_engine._protein_gap(computed, "fermented skate wing")
+    final, protein = recipe_engine._effective_nutrition(model_est, computed, gap)
+    print(f"case 1 — anchor unmatched: coverage={computed['coverage']:.2f} "
+          f"(would have passed the old mass-only gate: "
+          f"{'YES' if computed['coverage'] >= nutrition.COVERAGE_THRESHOLD else 'NO'})")
+    print(f"  nutrition_gap: {final.get('nutrition_gap')}")
+    print(f"  verdict: source={final['source']} protein={protein}g "
+          f"(model estimate held; computed {computed['protein_g']}g rejected)")
+    assert final["source"] == "est" and final.get("nutrition_gap") == gap and gap
+
+    # No floor chip from the partial computation: flags run on the est figure.
+    flags = recipe_engine._quality_flags(protein, final.get("calories"), 34, 1100, 2000)
+    print(f"  floor chip on the phantom figure: "
+          f"{'NO (est {0}g >= floor)'.format(protein) if 'protein_below_floor' not in (flags or {}) else 'YES — BUG'}")
+
+    # (2) MINOR ITEM UNMATCHED, protein matched: computed stands as before.
+    ings2 = [
+        {"name": "chicken breast", "quantity": 1.5, "unit": "lb"},
+        {"name": "white rice", "quantity": 2, "unit": "cup"},
+        {"name": "yuzu kosho", "quantity": 1, "unit": "tbsp"},
+    ]
+    computed2 = nutrition.compute(ings2, 2)
+    gap2 = recipe_engine._protein_gap(computed2, "chicken breast")
+    final2, protein2 = recipe_engine._effective_nutrition(model_est, computed2, gap2)
+    print(f"case 2 — minor item unmatched: coverage={computed2['coverage']:.2f} "
+          f"gap={gap2} -> source={final2['source']} protein={protein2}g "
+          "(computed stands)")
+    assert final2["source"] == "calculated" and not gap2
+
+    # (3) POST-ENRICHMENT: the kalbi/pollock-roe class now computes for real.
+    ings3 = [
+        {"name": "kalbi", "quantity": 1.5, "unit": "lb"},
+        {"name": "white rice", "quantity": 2, "unit": "cup"},
+        {"name": "kimchi", "quantity": 1, "unit": "cup"},
+    ]
+    computed3 = nutrition.compute(ings3, 2)
+    gap3 = recipe_engine._protein_gap(computed3, "kalbi")
+    final3, protein3 = recipe_engine._effective_nutrition(model_est, computed3, gap3)
+    print(f"case 3 — enriched kalbi: coverage={computed3['coverage']:.2f} "
+          f"gap={gap3} -> source={final3['source']} protein={protein3}g")
+    assert final3["source"] == "calculated" and not gap3 and protein3 > 20
+
+
 async def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--store", choices=["lidl", "stop_and_shop"], default=None)
@@ -2160,6 +2230,8 @@ async def main() -> None:
             await mini_checks()
             print()
             await week_checks()
+            print()
+            await nutrition_gate_checks()
             print()
 
     if args.save_reference:

@@ -108,6 +108,10 @@ def compute(ingredients: list[dict], servings: int | None) -> dict | None:
     totals = {"kcal": 0.0, "protein": 0.0, "carbs": 0.0, "fat": 0.0, "fiber": 0.0}
     matched_lines = 0
     total_lines = 0
+    # Every line that contributed NO macros — matched-with-no-data, unmatched,
+    # or unweighable. The P43 protein gate and the enrichment worklist both
+    # read this list; a primary protein must never hide in it silently.
+    unmatched: list[str] = []
 
     for ing in ingredients:
         if not isinstance(ing, dict):
@@ -118,6 +122,8 @@ def compute(ingredients: list[dict], servings: int | None) -> dict | None:
         total_lines += 1
         iid, _c = ingredient_matcher.match_ingredient(name)
         macro = _macros.get(iid) if iid is not None else None
+        if macro is None:
+            unmatched.append(name)
 
         q = quantities.parse(ing.get("quantity"), ing.get("unit"))
         if q is None:
@@ -150,4 +156,5 @@ def compute(ingredients: list[dict], servings: int | None) -> dict | None:
         "source": "calculated",
         "matched_lines": matched_lines,
         "total_lines": total_lines,
+        "unmatched": unmatched,
     }

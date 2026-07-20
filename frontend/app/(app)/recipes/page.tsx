@@ -15,7 +15,7 @@ import {
   saveToWeek,
 } from "@/lib/recipeApi";
 import { getMyStores, setDefaultStore } from "@/lib/storesApi";
-import type { Difficulty } from "@/lib/recipeApi";
+import type { Difficulty, WeekPlanEstimate } from "@/lib/recipeApi";
 import { getMe, type UserProfile } from "@/lib/userApi";
 import { getTopDeals, type Deal } from "@/lib/dealsApi";
 import { reportEvent } from "@/lib/eventsApi";
@@ -30,6 +30,7 @@ import ThisWeek from "@/components/recipes/ThisWeek";
 import Confetti from "@/components/recipes/Confetti";
 import SetupPanel from "@/components/recipes/SetupPanel";
 import UpgradeCards from "@/components/recipes/UpgradeCards";
+import WeekPlanner from "@/components/recipes/WeekPlanner";
 import GenerateMorePill from "@/components/recipes/GenerateMorePill";
 import { type Pin } from "@/components/recipes/UseUpRow";
 
@@ -148,6 +149,9 @@ export default function RecipesPage() {
   const [welcomeDeals, setWelcomeDeals] = useState<Deal[]>([]);
   const [welcomeStore, setWelcomeStore] = useState<string | null>(null);
   const [fromWelcome, setFromWelcome] = useState(false);
+  // P42 A4: after "Plan my week" lands, offer the list build with honest
+  // set-wide numbers (shared purchases credited once).
+  const [planEstimate, setPlanEstimate] = useState<WeekPlanEstimate | null>(null);
   const stepTimer = useRef<ReturnType<typeof setInterval> | null>(null);
   const pollTimer = useRef<ReturnType<typeof setInterval> | null>(null);
   const directionRef = useRef("");
@@ -774,6 +778,45 @@ export default function RecipesPage() {
       {/* ---------- THIS WEEK ---------- */}
       {tab === "week" && (
         <div className="mt-4">
+          {/* P42 A4: post-plan build-list prompt with honest set-wide numbers. */}
+          {planEstimate && weekCount > 0 && (
+            <div className="mb-4 rounded-2xl border border-brand/25 bg-brand-soft/60 p-4">
+              <p className="text-sm font-semibold text-ink">
+                ✓ Week planned — build the shopping list?
+              </p>
+              <p className="mt-1 text-xs text-ink-soft">
+                Est. ${Number(planEstimate.known_cost).toFixed(2)}
+                {Number(planEstimate.deal_savings) > 0 &&
+                  ` · saves $${Number(planEstimate.deal_savings).toFixed(2)}`}
+                {planEstimate.unpriced_items > 0 &&
+                  ` · +${planEstimate.unpriced_items} item${planEstimate.unpriced_items === 1 ? "" : "s"} priced in store`}
+              </p>
+              {planEstimate.shared_purchases.length > 0 && (
+                <p className="mt-1 text-xs text-ink-faint">
+                  Buy once, use twice:{" "}
+                  {planEstimate.shared_purchases.slice(0, 3).map((s) => s.name).join(", ")}
+                </p>
+              )}
+              <div className="mt-3 flex gap-2">
+                <button
+                  onClick={() => {
+                    setPlanEstimate(null);
+                    onBuildList();
+                  }}
+                  disabled={buildingList}
+                  className="flex h-10 flex-1 items-center justify-center rounded-xl bg-brand text-sm font-semibold text-white active:scale-[.99] disabled:opacity-60"
+                >
+                  {buildingList ? "Building…" : "🛒 Build the list"}
+                </button>
+                <button
+                  onClick={() => setPlanEstimate(null)}
+                  className="h-10 rounded-xl border border-hairline bg-surface px-4 text-sm font-medium text-ink-soft active:scale-[.99]"
+                >
+                  Not now
+                </button>
+              </div>
+            </div>
+          )}
           {weekCount > 0 ? (
             <ThisWeek
               week={week}
@@ -785,19 +828,30 @@ export default function RecipesPage() {
               onBuildList={onBuildList}
             />
           ) : (
-            <div className="rounded-2xl border border-hairline bg-surface p-8 text-center">
-              <div className="text-4xl" aria-hidden>🍽️</div>
-              <p className="mt-3 text-base font-semibold text-ink">Nothing saved yet</p>
-              <p className="mt-1 text-sm text-ink-soft">
-                Discover recipes and tap <span className="font-semibold">Save</span> to add them to
-                this week&apos;s plan.
-              </p>
-              <button
-                onClick={() => selectTab("discover")}
-                className="mt-5 flex h-12 w-full items-center justify-center rounded-2xl bg-brand text-sm font-semibold text-white active:scale-[.99]"
-              >
-                Discover recipes
-              </button>
+            <div className="flex flex-col gap-4">
+              {/* P42 A1: the empty-state hero IS the week planner. */}
+              <WeekPlanner
+                storeName={currentStoreName}
+                difficulties={difficulties}
+                pantryMode={pantryMode}
+                onPlanned={async (estimate) => {
+                  setPlanEstimate(estimate);
+                  await loadWeek();
+                }}
+                onError={(m) => setError(m)}
+              />
+              <div className="rounded-2xl border border-hairline bg-surface p-5 text-center">
+                <p className="text-sm text-ink-soft">
+                  Prefer one at a time? Discover recipes and tap{" "}
+                  <span className="font-semibold">Save</span>.
+                </p>
+                <button
+                  onClick={() => selectTab("discover")}
+                  className="mt-3 flex h-11 w-full items-center justify-center rounded-xl border border-hairline bg-surface text-sm font-semibold text-ink active:scale-[.99]"
+                >
+                  Discover recipes
+                </button>
+              </div>
             </div>
           )}
         </div>

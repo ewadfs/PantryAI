@@ -75,6 +75,12 @@ class Recipe(Base):
     #  "heavy": {"calories": 1104, "cap": 1100, "daily_target": 2000}}.
     # NULL/absent = clean. Rendered as visible amber chips on card + detail.
     quality_flags_json: Mapped[dict | None] = mapped_column(JSONB)
+    # Week plan (P42 A): this recipe was generated as part of a COORDINATED
+    # week set (shared purchases, deal stacking) that saved straight to This
+    # Week — it never enters the Discover feed (/latest excludes it).
+    week_plan: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=text("false")
+    )
     # Public share (P41 B): opt-in, revocable. A non-null slug makes the
     # recipe readable at /r/{slug} with NO auth — unsharing nulls it and the
     # old link 404s. Never exposes pantry data.

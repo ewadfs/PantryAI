@@ -4,7 +4,13 @@ import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useToast } from "@/components/ui/Toast";
-import { getDealsState, getTopDeals, type Deal } from "@/lib/dealsApi";
+import {
+  getDealsState,
+  getRitual,
+  getTopDeals,
+  type Deal,
+  type RitualResponse,
+} from "@/lib/dealsApi";
 import { getMyStores, setDefaultStore } from "@/lib/storesApi";
 import StoreChip from "@/components/stores/StoreChip";
 import StoreSheet from "@/components/recipes/StoreSheet";
@@ -64,12 +70,13 @@ export default function HomePage() {
   const [week, setWeek] = useState<WeekResponse | null>(null);
   const [savings, setSavings] = useState<SavingsResponse | null>(null);
   const [lastScan, setLastScan] = useState<string | null>(null);
+  const [ritual, setRitual] = useState<RitualResponse | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
     let redirecting: boolean | undefined;
     try {
-      const [meRes, dealsRes, pantryRes, storesRes, weekRes, savingsRes, stateRes] =
+      const [meRes, dealsRes, pantryRes, storesRes, weekRes, savingsRes, stateRes, ritualRes] =
         await Promise.all([
           getMe().catch(() => null),
           getTopDeals().catch(() => []),
@@ -78,6 +85,7 @@ export default function HomePage() {
           getWeek(currentWeekStart()).catch(() => null),
           getSavings().catch(() => null),
           getDealsState().catch(() => null),
+          getRitual().catch(() => null),
         ]);
       // P40 B: a brand-new account (no stores yet) goes straight to the
       // ZIP-first onboarding — picking a store is the only required setup.
@@ -94,6 +102,7 @@ export default function HomePage() {
       setWeek(weekRes);
       setSavings(savingsRes);
       setCircularOn(stateRes?.circular_viewer ?? false);
+      setRitual(ritualRes);
     } catch {
       toast.error("Couldn't load your home screen.", load);
     } finally {
@@ -161,6 +170,40 @@ export default function HomePage() {
         <Onboarding />
       ) : (
         <div className="flex flex-col gap-4">
+          {/* P42 B: flyer-flip ritual — on flip days Home LEADS with the new
+              flyer and the week-planning CTA; other days it stays collapsed
+              (the week card below is the ordinary state). */}
+          {ritual?.is_flip_day && (
+            <section className="rounded-2xl border border-brand/30 bg-brand-soft p-5">
+              <p className="text-base font-bold text-ink">
+                📰 New {ritual.store_name ?? ritual.chain_name} flyer
+              </p>
+              <p className="mt-1 text-sm text-ink-soft">
+                {ritual.deal_count} deals
+                {ritual.pantry_matches > 0 &&
+                  ` · ${ritual.pantry_matches} match your pantry`}
+                {ritual.expiring_count > 0 &&
+                  ` · ${ritual.expiring_count} item${ritual.expiring_count === 1 ? "" : "s"} expiring`}
+              </p>
+              <div className="mt-4 flex gap-3">
+                <Link
+                  href="/recipes?tab=week"
+                  className="flex h-11 flex-1 items-center justify-center rounded-xl bg-brand text-sm font-semibold text-white active:scale-[.99]"
+                >
+                  🗓️ Plan my week
+                </Link>
+                {circularOn && (
+                  <Link
+                    href="/circular/default"
+                    className="flex h-11 items-center justify-center rounded-xl border border-hairline bg-surface px-4 text-sm font-semibold text-ink active:scale-[.99]"
+                  >
+                    View flyer
+                  </Link>
+                )}
+              </div>
+            </section>
+          )}
+
           {/* Deals — header carries the SAME store chip as the Recipes setup
               panel (P37 A): one component, two homes. */}
           <section className="rounded-2xl border border-hairline bg-surface p-5">
@@ -267,12 +310,29 @@ export default function HomePage() {
                 {nextUncooked ? ` · next up: ${nextUncooked.title}` : " · all cooked ✅"}
               </p>
             )}
-            <Link
-              href={savedRecipes.length === 0 ? "/recipes" : "/recipes?tab=week"}
-              className="mt-4 flex h-11 w-full items-center justify-center rounded-xl border border-hairline bg-surface text-sm font-semibold text-ink active:scale-[.99]"
-            >
-              {savedRecipes.length === 0 ? "🍳 Get recipes" : "View recipes"}
-            </Link>
+            {savedRecipes.length === 0 ? (
+              <div className="mt-4 flex gap-3">
+                <Link
+                  href="/recipes?tab=week"
+                  className="flex h-11 flex-1 items-center justify-center rounded-xl bg-brand text-sm font-semibold text-white active:scale-[.99]"
+                >
+                  🗓️ Plan my week
+                </Link>
+                <Link
+                  href="/recipes"
+                  className="flex h-11 items-center justify-center rounded-xl border border-hairline bg-surface px-4 text-sm font-semibold text-ink active:scale-[.99]"
+                >
+                  🍳 Discover
+                </Link>
+              </div>
+            ) : (
+              <Link
+                href="/recipes?tab=week"
+                className="mt-4 flex h-11 w-full items-center justify-center rounded-xl border border-hairline bg-surface text-sm font-semibold text-ink active:scale-[.99]"
+              >
+                View recipes
+              </Link>
+            )}
           </section>
         </div>
       )}

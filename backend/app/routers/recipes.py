@@ -17,9 +17,12 @@ from app.schemas.recipe import (
     GenerateRequest,
     GenerateResponse,
     LatestResponse,
+    PlanWeekRequest,
+    PlanWeekResponse,
     RateRequest,
     RecipeRead,
     SaveToWeekRequest,
+    WeekPlanEstimate,
     WeekRecipeRead,
     WeekResponse,
 )
@@ -102,6 +105,69 @@ async def generate(
     return GenerateResponse(recipes=reads)
 
 
+@router.post("/recipes/plan-week", response_model=PlanWeekResponse)
+async def plan_week(
+    payload: PlanWeekRequest,
+    background_tasks: BackgroundTasks,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> PlanWeekResponse:
+    """One coordinated WEEK-PLANNING generation (P42 A): N dinners as a set —
+    shared purchases, deal stacking, easy-weighted order — saved straight to
+    This Week. The batch never enters the Discover feed."""
+    try:
+        recipes = await recipe_engine.generate_concepts(
+            db, current_user,
+            payload.pinned_pantry_item_ids, None, payload.difficulties,
+            pinned_deal_ids=payload.pinned_deal_ids,
+            pantry_mode=payload.pantry_mode,
+            week_plan=payload.dinners,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+    except Exception as exc:  # noqa: BLE001 — structured 500 with an error id
+        error_id = uuid.uuid4().hex[:8]
+        logger.exception(
+            "plan_week failed [error_id=%s] user=%s: %s",
+            error_id, current_user.id, exc,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail={
+                "message": "Week planning failed. Please try again.",
+                "error_id": error_id,
+            },
+        )
+
+    # A4: the set saves straight to This Week (skipping Discover).
+    week_start = recipe_engine.week_start_for(date.today())
+    for r in recipes:
+        db.add(
+            WeekRecipe(
+                user_id=current_user.id, recipe_id=r.id, week_start=week_start
+            )
+        )
+    events.log(db, current_user.id, "week_planned", dinners=payload.dinners)
+    await db.flush()
+
+    # Details: same lazy/eager split as the daily batch.
+    eager_ids = recipe_engine._eager_detail_ids(recipes)
+    if eager_ids:
+        background_tasks.add_task(
+            recipe_engine.run_details_bg, current_user.id, eager_ids
+        )
+
+    summary = recipe_engine.week_plan_summary(recipes)
+    return PlanWeekResponse(
+        recipes=[
+            RecipeRead.model_validate(recipe_engine.recipe_to_read(r))
+            for r in recipes
+        ],
+        week_start=week_start,
+        estimate=WeekPlanEstimate(**summary),
+    )
+
+
 _PREGEN_STALE_HOURS = 12
 
 
@@ -112,9 +178,14 @@ async def latest(
     db: AsyncSession = Depends(get_db),
 ) -> LatestResponse:
     """The user's most recent generated batch (any status) for a warm tab load."""
+    # Week-plan batches (P42) save straight to This Week — they never become
+    # the Discover feed's "latest batch".
     newest = await db.scalar(
         select(Recipe.generated_at)
-        .where(Recipe.user_id == current_user.id)
+        .where(
+            Recipe.user_id == current_user.id,
+            Recipe.week_plan.is_(False),
+        )
         .order_by(Recipe.generated_at.desc())
         .limit(1)
     )

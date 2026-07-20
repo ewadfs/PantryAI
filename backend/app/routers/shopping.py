@@ -88,6 +88,22 @@ async def build(
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(e))
     events.log(db, current_user.id, "list_built", list_id=sl.id, items=len(items))
+    # P42: a list built from a planned week is its own funnel moment.
+    if sl.week_start is not None:
+        from app.models.recipe import Recipe, WeekRecipe
+
+        planned = await db.scalar(
+            select(WeekRecipe.id)
+            .join(Recipe, Recipe.id == WeekRecipe.recipe_id)
+            .where(
+                WeekRecipe.user_id == current_user.id,
+                WeekRecipe.week_start == sl.week_start,
+                Recipe.week_plan.is_(True),
+            )
+            .limit(1)
+        )
+        if planned is not None:
+            events.log(db, current_user.id, "week_list_built", list_id=sl.id)
     await db.flush()
     return ShoppingListRead.model_validate(list_builder.serialize_list(sl, items))
 

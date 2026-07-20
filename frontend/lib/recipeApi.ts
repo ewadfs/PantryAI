@@ -73,3 +73,31 @@ export const unshareRecipe = (id: number) =>
   apiFetch<{ status: string }>(`/api/v1/recipes/${id}/share`, {
     method: "DELETE",
   });
+
+// P42 A: one coordinated week-planning press → saved straight to This Week.
+export type WeekPlanEstimate = {
+  known_cost: string;
+  deal_savings: string;
+  unpriced_items: number;
+  shared_purchases: { name: string; used_in: string[] }[];
+};
+
+export type PlanWeekResponse = {
+  recipes: Recipe[];
+  week_start: string;
+  estimate: WeekPlanEstimate;
+};
+
+export const planWeek = (
+  dinners: 3 | 4 | 5,
+  difficulties: Difficulty[] = [],
+  pantryMode = false,
+) =>
+  apiFetch<PlanWeekResponse>("/api/v1/recipes/plan-week", {
+    method: "POST",
+    json: {
+      dinners,
+      ...(difficulties.length && difficulties.length < 3 ? { difficulties } : {}),
+      ...(pantryMode ? { pantry_mode: true } : {}),
+    },
+  });

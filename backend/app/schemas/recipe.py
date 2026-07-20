@@ -164,6 +164,32 @@ class RecipeRead(BaseModel):
     share_slug: str | None = None
 
 
+class PlanWeekRequest(BaseModel):
+    """P42 A: one coordinated week-planning press. Everything beyond the
+    dinner count rides the user's current setup, same fields as generate."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    dinners: Literal[3, 4, 5]
+    pinned_pantry_item_ids: list[int] = Field(default_factory=list, max_length=3)
+    pinned_deal_ids: list[int] = Field(default_factory=list, max_length=3)
+    difficulties: list[Literal["easy", "medium", "hard"]] = Field(default_factory=list)
+    pantry_mode: bool = False
+
+
+class WeekPlanEstimate(BaseModel):
+    known_cost: str
+    deal_savings: str
+    unpriced_items: int
+    shared_purchases: list[dict]
+
+
+class PlanWeekResponse(BaseModel):
+    recipes: list["RecipeRead"]
+    week_start: date
+    estimate: WeekPlanEstimate
+
+
 class GenerateRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 

@@ -242,6 +242,118 @@ async def deals_state(
     )
 
 
+# Flyer-flip ritual window (P42 B): the surface leads with the new flyer for
+# this long after its deals landed, then collapses back to week status.
+_RITUAL_WINDOW_HOURS = 48
+
+
+@router.get("/ritual")
+async def flyer_ritual(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """The Home week-ahead surface (P42 B): is this a flyer-flip day for the
+    user's ACTIVE store, and the ritual card's numbers if so — deal count,
+    pantry matches, and expiring pantry items."""
+    from datetime import datetime, timedelta, timezone
+
+    from app.models.pantry import PantryItem
+
+    empty = {
+        "is_flip_day": False, "store_name": None, "chain_name": None,
+        "deal_count": 0, "pantry_matches": 0, "expiring_count": 0,
+        "flipped_at": None, "valid_to": None,
+    }
+    chain_id, region_key = await _default_region(db, current_user.id)
+    if chain_id is None:
+        return empty
+
+    today = date.today()
+    fetch_scope = [
+        CircularFetch.chain_id == chain_id,
+        CircularFetch.status.in_(("success", "partial")),
+        CircularFetch.valid_to >= today,
+        select(DealCache.id).where(DealCache.fetch_id == CircularFetch.id).exists(),
+    ]
+    if region_key is not None:
+        fetch_scope.append(CircularFetch.region_key == region_key)
+    fetch = await db.scalar(
+        select(CircularFetch)
+        .where(*fetch_scope)
+        .order_by(CircularFetch.fetched_at.desc())
+        .limit(1)
+    )
+    if fetch is None or fetch.fetched_at is None:
+        return empty
+
+    store = (
+        await db.execute(
+            select(StoreLocation.store_name, SupportedChain.chain_name)
+            .join(UserStore, UserStore.store_location_id == StoreLocation.id)
+            .join(SupportedChain, SupportedChain.id == StoreLocation.chain_id)
+            .where(
+                UserStore.user_id == current_user.id,
+                UserStore.is_default.is_(True),
+            )
+        )
+    ).first()
+
+    is_flip = fetch.fetched_at >= datetime.now(timezone.utc) - timedelta(
+        hours=_RITUAL_WINDOW_HOURS
+    )
+    deal_count = (
+        await db.scalar(
+            select(func.count(DealCache.id)).where(DealCache.fetch_id == fetch.id)
+        )
+    ) or 0
+    matched_ids = set(
+        (
+            await db.execute(
+                select(DealCache.matched_ingredient_id).where(
+                    DealCache.fetch_id == fetch.id,
+                    DealCache.matched_ingredient_id.isnot(None),
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    pantry_matches = 0
+    if matched_ids:
+        pantry_matches = (
+            await db.scalar(
+                select(func.count(PantryItem.id)).where(
+                    PantryItem.user_id == current_user.id,
+                    PantryItem.is_active.is_(True),
+                    PantryItem.ingredient_id.in_(matched_ids),
+                )
+            )
+        ) or 0
+    expiring_count = (
+        await db.scalar(
+            select(func.count(PantryItem.id)).where(
+                PantryItem.user_id == current_user.id,
+                PantryItem.is_active.is_(True),
+                or_(
+                    PantryItem.freshness == "use_soon",
+                    PantryItem.estimated_expiry <= today + timedelta(days=2),
+                ),
+            )
+        )
+    ) or 0
+
+    return {
+        "is_flip_day": is_flip,
+        "store_name": store.store_name if store else None,
+        "chain_name": store.chain_name if store else None,
+        "deal_count": int(deal_count),
+        "pantry_matches": int(pantry_matches),
+        "expiring_count": int(expiring_count),
+        "flipped_at": fetch.fetched_at.isoformat(),
+        "valid_to": fetch.valid_to.isoformat() if fetch.valid_to else None,
+    }
+
+
 # --------------------------------------------------------------------------- #
 # Circular viewer (Prompt 37 B)
 # --------------------------------------------------------------------------- #

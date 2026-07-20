@@ -311,6 +311,8 @@ class _StubMessages:
             return _msg({"recipes": [self._market_concept_from_correction(user)]})
         if "PANTRY MODE IS ON" in user and "Propose tonight's" in user:
             return _msg(self._pantry_mode_concepts(user))
+        if "WEEK PLAN" in user and "coordinated dinner concepts" in user:
+            return _msg(self._week_concepts(user))
         if "Propose tonight's" in user:
             return _msg(self._concepts(user))
         # variety / contract / critic regen fallbacks: echo one safe concept
@@ -479,6 +481,150 @@ class _StubMessages:
                 ]),
             }
         recipes += pantry_concepts
+        return {"recipes": recipes[:n]}
+
+    def _week_concepts(self, user: str) -> dict:
+        """WEEK PLAN press (P42): a deterministic COORDINATED set — the
+        perishable consumed first, a shared purchased herb across two meals,
+        and the best deal stacked (anchor in one dinner, support in another).
+        Exercises the shared-purchase overlap carve-out for real."""
+        n = int(re.search(r"propose exactly (\d+) concepts", user).group(1))
+        picks = re.findall(
+            r"- MARKET PICK \d+(?:\s*\[[^\]]*\])?: build around (.+?): "
+            r"\$([0-9.]+)(?:/(\w+))?"
+            r"(?:,[^\n—\[]*)?\s*((?:—\s*at\s+[^\n\[]+)?)", user,
+        )
+        per = re.search(
+            r"OWNED-PERISHABLE SLOT — the user already owns (.+?) \(HAVE", user
+        )
+        per_name = (per.group(1).strip() if per else None) or "ground beef"
+        tiers = []
+        mix = re.search(r"difficulty mix:\s*([^\n]+)", user).group(1)
+        for count, tier in re.findall(r"(\d+)\s+(easy|medium|hard)", mix):
+            tiers += [tier] * int(count)
+        tiers = (tiers + ["medium"] * n)[:n]
+
+        def pick_at(i):
+            if i < len(picks):
+                name, price, unit, _tail = picks[i]
+                clean = ingredient_matcher.normalize_flyer_name(name) or name
+                return clean.lower(), price, unit
+            return None
+
+        p1 = pick_at(0)
+        p2 = pick_at(1)
+        cilantro = {"generic_name": "cilantro", "brand": None,
+                    "in_pantry": False, "on_sale": False, "sale_price": None}
+
+        recipes = [{
+            # Night 1 — easiest, owned perishable out of the fridge FIRST.
+            "title": f"Monday {per_name.title()} Harissa Stew",
+            "description": f"The {per_name} goes first — nothing waits for Friday.",
+            "difficulty": tiers[0],
+            "prep_time_min": 10, "cook_time_min": 20, "total_time_min": 30,
+            "servings": 2,
+            "why_this_recipe": (
+                f"Your {per_name} leads the week so it never spoils. The "
+                "cilantro bunch bought tonight seasons Wednesday too."
+            ),
+            "cuisine": "moroccan", "dish_format": "stew",
+            "anchor_ingredient": per_name,
+            "flavor_lead": ["ras el hanout"],
+            "nutrition_per_serving": {"calories": 640, "protein_g": 55},
+            "key_ingredients": [
+                {"generic_name": per_name, "brand": None, "in_pantry": True,
+                 "on_sale": False, "sale_price": None},
+                {"generic_name": "white rice", "brand": None, "in_pantry": True,
+                 "on_sale": False, "sale_price": None},
+                dict(cilantro),
+                {"generic_name": "olive oil", "brand": None, "in_pantry": True,
+                 "on_sale": False, "sale_price": None},
+            ],
+        }]
+        if p1:
+            name1, price1, unit1 = p1
+            recipes.append({
+                # Night 2 — the week's best deal ANCHORS here...
+                "title": f"Sizzling {name1.title()} Fajitas",
+                "description": f"{name1} fajitas with the week's shared herbs.",
+                "difficulty": tiers[min(1, n - 1)],
+                "prep_time_min": 15, "cook_time_min": 20, "total_time_min": 35,
+                "servings": 2,
+                "why_this_recipe": (
+                    f"Built around {name1} at ${price1}"
+                    f"{'/' + unit1 if unit1 else ''} this week — the family "
+                    "pack splits across two dinners, and it uses the rest of "
+                    "Monday's cilantro."
+                ),
+                "cuisine": "tex-mex", "dish_format": "fajitas",
+                "anchor_ingredient": name1,
+                "flavor_lead": ["lime & chili"],
+                "market_pick": True, "tags": ["market pick"],
+                "nutrition_per_serving": {"calories": 650, "protein_g": 55},
+                "key_ingredients": [
+                    {"generic_name": name1, "brand": None, "in_pantry": False,
+                     "on_sale": True, "sale_price": price1},
+                    {"generic_name": "corn tortillas", "brand": None,
+                     "in_pantry": True, "on_sale": False, "sale_price": None},
+                    dict(cilantro),
+                    {"generic_name": "canned black beans", "brand": None,
+                     "in_pantry": True, "on_sale": False, "sale_price": None},
+                ],
+            })
+            recipes.append({
+                # Night 3 — ...and SUPPORTS here (deal stacking, not anchoring).
+                "title": "Broccoli Fried Rice",
+                "description": "Fried rice that stretches the family pack's second half.",
+                "difficulty": tiers[min(2, n - 1)],
+                "prep_time_min": 10, "cook_time_min": 15, "total_time_min": 25,
+                "servings": 2,
+                "why_this_recipe": (
+                    f"Stretches the second half of Tuesday's {name1} into a "
+                    "wok dinner — one purchase, two meals."
+                ),
+                "cuisine": "cantonese", "dish_format": "fried rice",
+                "anchor_ingredient": "broccoli",
+                "flavor_lead": ["ginger & scallion"],
+                "nutrition_per_serving": {"calories": 620, "protein_g": 52},
+                "key_ingredients": [
+                    {"generic_name": "broccoli", "brand": None, "in_pantry": True,
+                     "on_sale": False, "sale_price": None},
+                    {"generic_name": "white rice", "brand": None, "in_pantry": True,
+                     "on_sale": False, "sale_price": None},
+                    {"generic_name": name1, "brand": None, "in_pantry": False,
+                     "on_sale": True, "sale_price": price1},
+                    {"generic_name": "eggs", "brand": None, "in_pantry": True,
+                     "on_sale": False, "sale_price": None},
+                ],
+            })
+        if p2 and len(recipes) < n:
+            name2, price2, unit2 = p2
+            recipes.append({
+                "title": f"Sheet-Pan {name2.title()} Finale",
+                "description": f"A hands-off {name2} sheet-pan dinner to close the week.",
+                "difficulty": tiers[-1],
+                "prep_time_min": 15, "cook_time_min": 35, "total_time_min": 50,
+                "servings": 2,
+                "why_this_recipe": (
+                    f"Built around {name2} at ${price2}"
+                    f"{'/' + unit2 if unit2 else ''} this week."
+                ),
+                "cuisine": "italian", "dish_format": "sheet-pan",
+                "anchor_ingredient": name2,
+                "flavor_lead": ["lemon-caper"],
+                "market_pick": True, "tags": ["market pick"],
+                "nutrition_per_serving": {"calories": 630, "protein_g": 54},
+                "key_ingredients": [
+                    {"generic_name": name2, "brand": None, "in_pantry": False,
+                     "on_sale": True, "sale_price": price2},
+                    {"generic_name": "baby potatoes", "brand": None,
+                     "in_pantry": True, "on_sale": False, "sale_price": None},
+                    {"generic_name": "parmesan cheese", "brand": None,
+                     "in_pantry": True, "on_sale": False, "sale_price": None},
+                ],
+            })
+        while len(recipes) < n:
+            recipes.append(self._fallback_pantry_concept(tiers[len(recipes)]))
         return {"recipes": recipes[:n]}
 
     def _prominence_regen(self, user: str) -> dict:
@@ -1905,6 +2051,82 @@ async def mini_checks() -> None:
               f"(the scheduler also sweeps every {settings.deals_refresh_hours}h)")
 
 
+async def week_checks() -> None:
+    """P42 week-mode fixture: one coordinated 4-dinner press through the full
+    enforcement chain. Verifies the set's coordination properties — perishable
+    first, shared purchase across ≥2 meals (carved out of overlap), the best
+    deal stacked as anchor + support, easy-weighted order — plus week_plan
+    flags and Discover exclusion."""
+    print("=" * 76)
+    print("WEEK-MODE FIXTURE — P42 coordinated 4-dinner plan")
+    print("=" * 76)
+    async with AsyncSessionLocal() as db:
+        user = (
+            await db.execute(
+                select(User).where(User.supabase_user_id == "golden-fixture-lidl")
+            )
+        ).scalar_one()
+        # The starvation mini-check just wiped the flyer — restore it so the
+        # week plan has real deals to coordinate around.
+        await _seed_deals(db, "lidl", LIDL_DEALS)
+        await db.commit()
+        newest_daily = await db.scalar(
+            select(Recipe.generated_at)
+            .where(Recipe.user_id == user.id, Recipe.week_plan.is_(False))
+            .order_by(Recipe.generated_at.desc())
+            .limit(1)
+        )
+
+        concepts = await recipe_engine.generate_concepts(db, user, week_plan=4)
+        await db.commit()
+
+        print(f"week plan @ N=4: {len(concepts)} concepts, "
+              f"week_plan flags: {[r.week_plan for r in concepts]}")
+        for i, r in enumerate(concepts, 1):
+            anchor = (r.signature_json or {}).get("anchor_ingredient")
+            mk = " [market]" if r.is_market_pick else ""
+            print(f"  night {i}: [{r.difficulty}] {r.title} — anchor: {anchor}{mk}")
+
+        # Order: easiest first, perishable consumed earliest.
+        tier_rank = {"easy": 0, "medium": 1, "hard": 2}
+        ranks = [tier_rank.get(r.difficulty or "", 1) for r in concepts]
+        print(f"  easy-weighted order (non-decreasing tiers): "
+              f"{'YES' if ranks == sorted(ranks) else 'NO'} {ranks}")
+        first_anchor = str(
+            (concepts[0].signature_json or {}).get("anchor_ingredient") or ""
+        )
+        print(f"  perishable consumed first: "
+              f"{'YES' if 'beef' in first_anchor else 'NO'} ({first_anchor})")
+
+        # Shared-purchase map + set-wide estimate (credited once).
+        summary = recipe_engine.week_plan_summary(concepts)
+        print(f"  estimate: known=${summary['known_cost']} "
+              f"savings=${summary['deal_savings']} "
+              f"unpriced={summary['unpriced_items']}")
+        for s in summary["shared_purchases"]:
+            print(f"  shared purchase: {s['name']} -> {len(s['used_in'])} meals "
+                  f"({', '.join(s['used_in'])})")
+        stacked = [
+            s for s in summary["shared_purchases"]
+            if any(r.is_market_pick and str(
+                (r.market_anchor_json or {}).get("name") or ""
+            ).lower() in s["name"].lower() for r in concepts)
+        ]
+        print(f"  deal stacked across >=2 meals: "
+              f"{'YES' if stacked else 'NO'}"
+              + (f" ({stacked[0]['name']})" if stacked else ""))
+
+        # Discover exclusion: the newest NON-week batch is unchanged.
+        newest_after = await db.scalar(
+            select(Recipe.generated_at)
+            .where(Recipe.user_id == user.id, Recipe.week_plan.is_(False))
+            .order_by(Recipe.generated_at.desc())
+            .limit(1)
+        )
+        print(f"  Discover feed untouched by week batch: "
+              f"{'YES' if newest_after == newest_daily else 'NO'}")
+
+
 async def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--store", choices=["lidl", "stop_and_shop"], default=None)
@@ -1936,6 +2158,8 @@ async def main() -> None:
             print()
         if "lidl" in slugs:
             await mini_checks()
+            print()
+            await week_checks()
             print()
 
     if args.save_reference:

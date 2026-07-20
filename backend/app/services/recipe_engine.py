@@ -1384,7 +1384,7 @@ async def _overlap_pool(
             await db.execute(
                 select(Recipe)
                 .where(Recipe.user_id == user_id, Recipe.generated_at >= cutoff)
-                .order_by(Recipe.generated_at.desc())
+                .order_by(Recipe.generated_at.desc(), Recipe.id.desc())
             )
         )
         .scalars()
@@ -1457,6 +1457,26 @@ def _overlap_carveout(
         if k is not None:
             keys.add(k)
     return keys
+
+
+def _week_shared_purchase_keys(concepts: list[dict], ctx: "_Ctx") -> set[str]:
+    """Purchased ingredients appearing in ≥2 of the week set's concepts —
+    by construction these are the plan's shared purchases (buy once, use
+    twice), so they join the P33-6 carve-out instead of tripping the
+    batchmate overlap check (P42 A3)."""
+    counts: dict[str, int] = {}
+    for c in concepts:
+        seen: set[str] = set()
+        for nm in _concept_ing_names(c):
+            k = _ing_key(nm)
+            if k is None or _is_staple_name(nm, k):
+                continue
+            if _owned(nm, ctx) is not None:
+                continue  # owned items are not purchases
+            seen.add(k)
+        for k in seen:
+            counts[k] = counts.get(k, 0) + 1
+    return {k for k, cnt in counts.items() if cnt >= 2}
 
 
 def _overlap_violation(
@@ -1647,6 +1667,50 @@ def _tier_list(n: int, difficulties: list[str] | None = None) -> list[str]:
 def _tier_plan_text(n: int, difficulties: list[str] | None = None) -> str:
     counts = _tier_counts(n, difficulties)
     return ", ".join(f"{counts[t]} {t}" for t in _TIER_ORDER if counts.get(t))
+
+
+def _week_tier_counts(n: int, difficulties: list[str] | None = None) -> dict[str, int]:
+    """Week-plan tier mix (P42 A2): easier meals weighted first. Start from the
+    even split, then move one dinner from the hardest selected tier to the
+    easiest whenever ≥2 tiers are in play and the week has ≥4 dinners."""
+    counts = _tier_counts(n, difficulties)
+    sel = [t for t in _TIER_ORDER if counts.get(t)]
+    if n >= 4 and len(sel) >= 2 and counts[sel[-1]] > 0:
+        counts[sel[-1]] -= 1
+        counts[sel[0]] += 1
+    return {t: c for t, c in counts.items() if c}
+
+
+def _week_tier_plan_text(n: int, difficulties: list[str] | None = None) -> str:
+    counts = _week_tier_counts(n, difficulties)
+    return ", ".join(f"{counts[t]} {t}" for t in _TIER_ORDER if counts.get(t))
+
+
+def _week_block(n: int) -> str:
+    """Coordination rules for a WEEK-PLANNING press (P42 A2). The set is a
+    unit: purchases amortize across meals, the week's best deal stacks, and
+    the cook's energy budget shapes the order."""
+    return (
+        f"\n\nWEEK PLAN — these {n} concepts are ONE COORDINATED SET of "
+        "dinners for the week, not independent suggestions:\n"
+        "- SHARE PURCHASED INGREDIENTS across meals: when a bought item "
+        "(a bunch of cilantro, a head of cabbage, a tub of yogurt) can serve "
+        "two dinners, plan it into both — buy once, use twice. Owned pantry "
+        "staples don't need sharing.\n"
+        "- STACK THE WEEK'S BEST DEAL: when it makes culinary sense, the "
+        "single best deal should appear in ≥2 meals — anchor one dinner and "
+        "play a supporting role in another (family pack → two treatments). "
+        "Never force it where it doesn't fit.\n"
+        "- VARIETY STILL RULES SET-WIDE: distinct proteins, dish formats, and "
+        "flavor leads across the week. Sharing a purchased side ingredient "
+        "is efficiency; repeating a dinner is monotony.\n"
+        "- ORDER = COOKING ORDER: list easier meals first (early-week "
+        "energy), and dinners consuming owned perishables earliest so "
+        "nothing spoils waiting for Friday.\n"
+        "- why_this_recipe MAY reference the set (\"uses the rest of "
+        "Monday's cilantro\") — position references must match the order "
+        "you list the concepts in."
+    )
 
 
 # Food/dish/protein words a counted direction can enumerate (Prompt 30). Used to
@@ -2037,7 +2101,7 @@ async def _build_taste_history(
             await db.execute(
                 select(Recipe)
                 .where(Recipe.user_id == user_id, Recipe.rating == 1)
-                .order_by(Recipe.generated_at.desc())
+                .order_by(Recipe.generated_at.desc(), Recipe.id.desc())
                 .limit(_HISTORY_LIMIT)
             )
         )
@@ -2065,7 +2129,7 @@ async def _build_taste_history(
             await db.execute(
                 select(Recipe)
                 .where(Recipe.user_id == user_id, Recipe.rating == -1)
-                .order_by(Recipe.generated_at.desc())
+                .order_by(Recipe.generated_at.desc(), Recipe.id.desc())
                 .limit(_HISTORY_LIMIT)
             )
         )
@@ -2094,7 +2158,7 @@ async def _build_taste_history(
                     Recipe.user_id == user_id,
                     Recipe.generated_at >= cutoff,
                 )
-                .order_by(Recipe.generated_at.desc())
+                .order_by(Recipe.generated_at.desc(), Recipe.id.desc())
             )
         )
         .scalars()
@@ -2216,6 +2280,64 @@ def _cost_from_ingredients(ingredients: list[dict]) -> dict:
         "known_buy_cost": known.quantize(Decimal("0.01")),
         "unknown_priced_items": unknown,
         "pantry_items_used": pantry_used,
+    }
+
+
+def week_plan_summary(recipes: list[Recipe]) -> dict:
+    """Set-wide purchase summary for a week plan (P42 A4).
+
+    Distinct purchased ingredients are credited ONCE across the set (the
+    consolidated-list contract), the shared-purchase map names which buys
+    serve multiple meals, and deal savings only count where the flyer's
+    savings_pct is actually known — no invented regular prices."""
+    priced: dict[str, Decimal] = {}
+    names: dict[str, str] = {}
+    used_in: dict[str, list[str]] = {}
+    for r in recipes:
+        for ing in r.key_ingredients_json or []:
+            if not isinstance(ing, dict) or ing.get("in_pantry") is True:
+                continue
+            nm = str(ing.get("generic_name") or ing.get("name") or "").strip()
+            k = _ing_key(nm)
+            if k is None or _is_staple_name(nm, k):
+                continue
+            names.setdefault(k, nm)
+            titles = used_in.setdefault(k, [])
+            if r.title not in titles:
+                titles.append(r.title)
+            price = _to_decimal(ing.get("sale_price"))
+            if ing.get("on_sale") and price is not None:
+                priced.setdefault(k, price)  # credited once, set-wide
+    known = sum(priced.values(), Decimal("0"))
+    unpriced = sum(1 for k in used_in if k not in priced)
+
+    savings = Decimal("0")
+    seen_anchor: set[str] = set()
+    for r in recipes:
+        a = r.market_anchor_json or {}
+        sale = _to_decimal(a.get("sale_price"))
+        pct = a.get("savings_pct")
+        key = a.get("anchor_key") or a.get("name") or ""
+        if sale is None or not pct or not key or key in seen_anchor:
+            continue
+        seen_anchor.add(key)
+        try:
+            frac = Decimal(str(pct)) / Decimal("100")
+            if Decimal("0") < frac < Decimal("1"):
+                savings += (sale / (1 - frac)) - sale
+        except Exception:  # noqa: BLE001 — estimate only, never break the plan
+            continue
+
+    shared = [
+        {"name": names[k], "used_in": titles}
+        for k, titles in used_in.items()
+        if len(titles) >= 2
+    ]
+    return {
+        "known_cost": str(known.quantize(Decimal("0.01"))),
+        "deal_savings": str(savings.quantize(Decimal("0.01"))),
+        "unpriced_items": unpriced,
+        "shared_purchases": shared,
     }
 
 
@@ -3312,6 +3434,7 @@ async def generate_concepts(
     *,
     pinned_deal_ids: list[int] | None = None,
     pantry_mode: bool = False,
+    week_plan: int | None = None,
     category: str = "generation",
 ) -> list[Recipe]:
     """One fast Claude call → N persisted concept recipes (status='concept').
@@ -3319,6 +3442,12 @@ async def generate_concepts(
     ``difficulties`` is a subset of {easy, medium, hard}; empty/None draws from
     all three. N is split evenly across the selected tiers, remainder to the
     easiest selected tier.
+
+    ``week_plan`` (P42 A): when set (3/4/5), this is a WEEK-PLANNING press —
+    the N dinners are produced AS A COORDINATED SET (shared purchases, deal
+    stacking, easy-weighted, perishables earliest), the tier mix tilts easier,
+    and batchmate shared purchases join the P33-6 overlap carve-out. Persisted
+    with week_plan=True so the batch never enters the Discover feed.
     """
     pins = await _resolve_pins(db, user.id, pinned_ids or [])
     pin_dicts = _pin_dicts(pins)
@@ -3340,7 +3469,7 @@ async def generate_concepts(
             await db.execute(
                 select(Recipe.title)
                 .where(Recipe.user_id == user.id)
-                .order_by(Recipe.generated_at.desc())
+                .order_by(Recipe.generated_at.desc(), Recipe.id.desc())
                 .limit(_RECENT_TITLES)
             )
         )
@@ -3348,7 +3477,8 @@ async def generate_concepts(
         .all()
     )
 
-    n = _clamp_n(user.recipes_per_generation)
+    week_mode = week_plan in (3, 4, 5)
+    n = week_plan if week_mode else _clamp_n(user.recipes_per_generation)
     tiers = _clean_difficulties(difficulties)
 
     # Counted-direction SLOT CONTRACT (Prompt 30): an enumerated direction caps
@@ -3501,18 +3631,26 @@ async def generate_concepts(
             "sufficiently owned). Batch falls back to pantry anchors.",
             market_slots, user.id,
         )
+    tier_plan = (
+        _week_tier_plan_text(n, tiers) if week_mode else _tier_plan_text(n, tiers)
+    )
     user_msg = (
         f"THIS BATCH: propose exactly {n} concepts with difficulty mix: "
-        f"{_tier_plan_text(n, tiers)}.\n"
+        f"{tier_plan}.\n"
         f"Avoid repeating these recent titles: {_fmt_list(list(recent_titles))}."
         + ctx.variety_block
+        + (_week_block(n) if week_mode else "")
         + (_pantry_mode_block() if ctx.pantry_mode else "")
         + perishable_block
         + market_block
         + starved_block
         + _direction_block(ctx.direction, enumerated)
         + ctx.pin_block
-        + f"\n\nPropose tonight's {n} dinner concepts now."
+        + (
+            f"\n\nPropose the week's {n} coordinated dinner concepts now."
+            if week_mode
+            else f"\n\nPropose tonight's {n} dinner concepts now."
+        )
     )
 
     # Prompt-context audit (Prompt 32 A2): one INFO line proves every context
@@ -3596,9 +3734,20 @@ async def generate_concepts(
                 )
             # Ingredient-overlap variety math (P33 B): deterministic Jaccard +
             # flavor-lead check vs batchmates, recent batches, and the saved
-            # week; one named regeneration, survivors disclosed.
+            # week; one named regeneration, survivors disclosed. In week mode,
+            # the set's own shared purchases are planned efficiency, not
+            # monotony — they join the carve-out first (P42 A3).
+            overlap_carveout = ctx.overlap_carveout
+            if week_mode:
+                shared_keys = _week_shared_purchase_keys(raw, ctx)
+                if shared_keys:
+                    overlap_carveout = ctx.overlap_carveout | shared_keys
+                    logger.info(
+                        "Week plan: %d shared-purchase key(s) carved out of "
+                        "overlap: %s", len(shared_keys), sorted(shared_keys),
+                    )
             raw = await _enforce_ingredient_overlap(
-                client, raw, ctx.overlap_pool, ctx.overlap_carveout,
+                client, raw, ctx.overlap_pool, overlap_carveout,
                 system_blocks, user_msg,
             )
             # Pantry-mode purchase budget (P35 B4): deterministic, named
@@ -3647,10 +3796,16 @@ async def generate_concepts(
     # first, market picks after — persisted in this order so /latest (ordered
     # by id) serves the all-pantry dish as its tier's headline. Purchase-
     # anchored strays (P35 #2) sort with the market picks they really are.
-    pairs = _feed_sort(
-        list(zip(raw, critics)), ctx.market_candidates + ctx.anchor_pool,
-        pantry_iids,
-    )
+    # Week mode keeps the MODEL's order: it was instructed to list cooking
+    # order (easier first, perishables earliest) and its set references
+    # ("Monday's cilantro") depend on that order surviving (P42 A2).
+    if week_mode:
+        pairs = list(zip(raw, critics))
+    else:
+        pairs = _feed_sort(
+            list(zip(raw, critics)), ctx.market_candidates + ctx.anchor_pool,
+            pantry_iids,
+        )
 
     # Persist-time distinctness gate (P34 C6): the final say on market anchors.
     # Selection dedups products, enforcement verifies regens — and this gate
@@ -3748,6 +3903,7 @@ async def generate_concepts(
             direction=ctx.direction or None,
             difficulties=tiers or None,
             pantry_mode=ctx.pantry_mode,
+            week_plan=week_mode,
             critic_json=critic or None,
             signature_json={
                 "anchor_ingredient": r.get("anchor_ingredient"),
@@ -4719,7 +4875,7 @@ async def _last_difficulties(db: AsyncSession, user_id: int) -> list[str]:
     row = await db.scalar(
         select(Recipe.difficulties)
         .where(Recipe.user_id == user_id)
-        .order_by(Recipe.generated_at.desc())
+        .order_by(Recipe.generated_at.desc(), Recipe.id.desc())
         .limit(1)
     )
     return list(row) if row else []
@@ -4731,7 +4887,7 @@ async def _last_pantry_mode(db: AsyncSession, user_id: int) -> bool:
     row = await db.scalar(
         select(Recipe.pantry_mode)
         .where(Recipe.user_id == user_id)
-        .order_by(Recipe.generated_at.desc())
+        .order_by(Recipe.generated_at.desc(), Recipe.id.desc())
         .limit(1)
     )
     return bool(row)

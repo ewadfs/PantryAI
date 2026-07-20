@@ -60,16 +60,16 @@ pairwise Jaccard (non-staple sets, carve-outs removed):
   B3: New York Strip Steak Weeknight Supper (batch)
   B4: Ground Turkey Rice Bowl (batch)
   B5: Pork Loin Chops Skillet Supper (batch)
-  P1: Charred Cauliflower Shawarma Wraps (recent)
+  P1: Charred Beef Fajita Bowls (recent)
   P2: Charred Cauliflower Curry (recent)
-  P3: Charred Beef Fajita Bowls (recent)
+  P3: Charred Cauliflower Shawarma Wraps (recent)
   P4: Charred Cauliflower Power Bowl (recent)
   P5: Weeknight Beef Ragu Rigatoni (saved this week)
         B1    B2    B3    B4    B5    P1    P2    P3    P4    P5
-  B1     —  0.00  0.00  0.00  0.00  0.12  0.00  0.00  0.00  0.00
+  B1     —  0.00  0.00  0.00  0.00  0.00  0.00  0.12  0.00  0.00
   B2  0.00     —  0.00  0.00  0.00  0.00  0.00  0.00  0.00  0.00
   B3  0.00  0.00     —  0.00  0.00  0.00  0.00  0.00  0.00  0.00
-  B4  0.00  0.00  0.00     —  0.00  0.00  0.00  0.20  0.00  0.00
+  B4  0.00  0.00  0.00     —  0.00  0.20  0.00  0.00  0.00  0.00
   B5  0.00  0.00  0.00  0.00     —  0.00  0.00  0.00  0.00  0.00
   max pairwise J = 0.20 (violation thresholds: >0.6 any, >0.45 same-anchor)
 carve-out proof: pin 'cherry tomatoes' in all 5 recipes = YES; overlap guard tripped by pin: NO (pins are carved out of every Jaccard set)
@@ -139,13 +139,13 @@ pairwise Jaccard (non-staple sets, carve-outs removed):
   B3: Pork Loin Chops Weeknight Supper (batch)
   B4: Charred Atlantic Salmon Fillets Burgers (batch)
   B5: Chicken Thighs Family Feast (batch)
-  P1: Charred Cauliflower Shawarma Wraps (recent)
+  P1: Charred Beef Fajita Bowls (recent)
   P2: Charred Cauliflower Curry (recent)
-  P3: Charred Beef Fajita Bowls (recent)
+  P3: Charred Cauliflower Shawarma Wraps (recent)
   P4: Charred Cauliflower Power Bowl (recent)
   P5: Weeknight Beef Ragu Rigatoni (saved this week)
         B1    B2    B3    B4    B5    P1    P2    P3    P4    P5
-  B1     —  0.00  0.00  0.00  0.00  0.12  0.00  0.00  0.00  0.00
+  B1     —  0.00  0.00  0.00  0.00  0.00  0.00  0.12  0.00  0.00
   B2  0.00     —  0.00  0.00  0.00  0.00  0.00  0.00  0.00  0.00
   B3  0.00  0.00     —  0.00  0.00  0.00  0.00  0.00  0.00  0.00
   B4  0.00  0.00  0.00     —  0.00  0.00  0.00  0.00  0.00  0.00
@@ -194,4 +194,20 @@ deals starved @ N=5 (flyers wiped; stub proposes the live ALL-BEEF batch — 5×
   beef-anchored: 1 (one anchor, one dish); anchors distinct: YES; market picks: 0
   title-word check: CLEAN
   self-heal: background circular refresh scheduled for 2 starved store(s) (the scheduler also sweeps every 6h)
+
+============================================================================
+WEEK-MODE FIXTURE — P42 coordinated 4-dinner plan
+============================================================================
+week plan @ N=4: 4 concepts, week_plan flags: [True, True, True, True]
+  night 1: [easy] Monday Ground Beef Harissa Stew — anchor: ground beef
+  night 2: [easy] Sizzling Chicken Breast Fajitas — anchor: chicken breast [market]
+  night 3: [easy] Broccoli Fried Rice — anchor: broccoli
+  night 4: [medium] Sheet-Pan Cauliflower Finale — anchor: cauliflower [market]
+  easy-weighted order (non-decreasing tiers): YES [0, 0, 0, 1]
+  perishable consumed first: YES (ground beef)
+  estimate: known=$4.48 savings=$2.50 unpriced=1
+  shared purchase: cilantro -> 2 meals (Monday Ground Beef Harissa Stew, Sizzling Chicken Breast Fajitas)
+  shared purchase: chicken breast -> 2 meals (Sizzling Chicken Breast Fajitas, Broccoli Fried Rice)
+  deal stacked across >=2 meals: YES (chicken breast)
+  Discover feed untouched by week batch: YES
 

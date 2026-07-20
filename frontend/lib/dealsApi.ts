@@ -73,3 +73,17 @@ export function getDeals(params: {
   qs.set("per_page", String(params.per_page ?? 20));
   return apiFetch<DealListResponse>(`/api/v1/deals?${qs.toString()}`);
 }
+
+// P42 B: the Home week-ahead surface — flyer-flip ritual numbers.
+export type RitualResponse = {
+  is_flip_day: boolean;
+  store_name: string | null;
+  chain_name: string | null;
+  deal_count: number;
+  pantry_matches: number;
+  expiring_count: number;
+  flipped_at: string | null;
+  valid_to: string | null;
+};
+
+export const getRitual = () => apiFetch<RitualResponse>("/api/v1/deals/ritual");

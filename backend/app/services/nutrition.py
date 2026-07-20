@@ -127,10 +127,20 @@ def compute(ingredients: list[dict], servings: int | None) -> dict | None:
 
         q = quantities.parse(ing.get("quantity"), ing.get("unit"))
         if q is None:
-            continue  # no magnitude — unweighable, skip entirely
+            if macro is not None:
+                # Matched but no magnitude — contributed nothing after all.
+                unmatched.append(name)
+            continue
         grams = _to_grams(q, macro["grams_per_unit"] if macro else None)
         if grams is None:
-            continue  # can't weigh this line (e.g. "1 can", no per-unit weight)
+            if macro is not None:
+                # Matched but unweighable ("1 package", no per-unit weight) —
+                # silently contributes ZERO macros AND zero mass, so coverage
+                # can't see it. Observed live: '1 package Korean BBQ beef'
+                # matched post-enrichment yet still shipped a 6.6g bowl. The
+                # protein gate must see these lines too.
+                unmatched.append(name)
+            continue
 
         weighable_mass += grams
         if macro is not None:

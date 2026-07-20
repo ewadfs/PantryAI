@@ -103,7 +103,15 @@ export default function HomePage() {
 
   useEffect(() => {
     load();
-    if (typeof window !== "undefined") setLastScan(localStorage.getItem(LAST_SCAN_KEY));
+    if (typeof window !== "undefined") {
+      setLastScan(localStorage.getItem(LAST_SCAN_KEY));
+      // P41 A: arrived via a flyer-day notification tap.
+      const params = new URLSearchParams(window.location.search);
+      if (params.get("push") === "1") {
+        import("@/lib/eventsApi").then(({ reportEvent }) => reportEvent("push_opened"));
+        window.history.replaceState({}, "", "/");
+      }
+    }
   }, [load]);
 
   const name = firstName(me);

@@ -790,6 +790,14 @@ class CircularExtractor:
         db.add_all(rows)
         await ai_metering.persist_events(db, _cost_events)
         await db.flush()
+        if rows:
+            # P41 A: a fresh flyer's deals just landed — the one moment a
+            # push notification is allowed to fire (caps enforced inside).
+            from app.services import push as push_service
+
+            await push_service.notify_flyer_flip(
+                db, fetch.chain_id, region_key, fetch.id
+            )
         return {
             "pages": len(keys),
             "deals": len(rows),
@@ -1210,6 +1218,14 @@ class CircularExtractor:
                 logger.info(
                     "Deferred activation completed for %s: %d deals collected "
                     "from parked batch %s", chain.chain_slug, len(rows), bid,
+                )
+            if rows:
+                # P41 A: parked-batch deals landing is also a flyer flip.
+                from app.services import push as push_service
+
+                await push_service.notify_flyer_flip(
+                    db, fetch.chain_id, fetch.region_key, fetch.id,
+                    chain.chain_name if chain else None,
                 )
             await db.commit()
             logger.info(

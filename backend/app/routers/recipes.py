@@ -1,6 +1,7 @@
 """Recipe generation, rating, and the This Week list."""
 
 import logging
+import secrets
 import uuid
 from datetime import date, datetime, timedelta, timezone
 
@@ -244,6 +245,49 @@ async def save_to_week(
         cooked_at=wr.cooked_at,
         recipe=RecipeRead.model_validate(recipe_engine.recipe_to_read(recipe)),
     )
+
+
+# --------------------------------------------------------------------------- #
+# Public sharing (P41 B): opt-in per recipe, revocable, no pantry data.
+# --------------------------------------------------------------------------- #
+@router.post("/recipes/{recipe_id}/share")
+async def share_recipe(
+    recipe_id: int,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Mint (or return) the public read-only slug for one of my recipes."""
+    from app.config import settings
+
+    recipe = await _owned_recipe(db, recipe_id, current_user.id)
+    if recipe.status != "ready":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Open the recipe once so its details finish before sharing.",
+        )
+    if not recipe.share_slug:
+        recipe.share_slug = secrets.token_urlsafe(9)  # 12 URL chars
+        recipe.shared_at = _now()
+        events.log(db, current_user.id, "share_created", recipe_id=recipe_id)
+        await db.flush()
+    return {
+        "slug": recipe.share_slug,
+        "url": f"{settings.frontend_origin}/r/{recipe.share_slug}",
+    }
+
+
+@router.delete("/recipes/{recipe_id}/share")
+async def unshare_recipe(
+    recipe_id: int,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Revoke the public link — the old slug 404s immediately."""
+    recipe = await _owned_recipe(db, recipe_id, current_user.id)
+    recipe.share_slug = None
+    recipe.shared_at = None
+    await db.flush()
+    return {"status": "unshared"}
 
 
 # --------------------------------------------------------------------------- #

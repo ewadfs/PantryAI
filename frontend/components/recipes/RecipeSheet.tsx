@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { getRecipe } from "@/lib/recipeApi";
+import { getRecipe, shareRecipe, unshareRecipe } from "@/lib/recipeApi";
 import { comparePricesForRecipe, type PriceCompareResponse } from "@/lib/pricesApi";
 import type { Recipe } from "@/lib/recipeTypes";
 import {
@@ -123,6 +123,91 @@ function BuyAtRow({ prices }: { prices: PriceCompareResponse }) {
   );
 }
 
+/** Per-recipe public share (P41 B): opt-in, revocable, navigator.share with
+ * clipboard fallback. Shows "Shared" state when a live link exists. */
+function ShareButton({
+  data,
+  onShared,
+}: {
+  data: Recipe;
+  onShared: (r: Recipe) => void;
+}) {
+  const [busy, setBusy] = useState(false);
+  const [copied, setCopied] = useState(false);
+  const shared = !!data.share_slug;
+
+  async function distribute(url: string) {
+    if (typeof navigator !== "undefined" && navigator.share) {
+      try {
+        await navigator.share({ title: data.title, url });
+        return;
+      } catch {
+        /* user cancelled — fall through to clipboard */
+      }
+    }
+    try {
+      await navigator.clipboard.writeText(url);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch {
+      window.prompt("Copy this link:", url);
+    }
+  }
+
+  async function onShare() {
+    if (busy) return;
+    setBusy(true);
+    try {
+      const { slug, url } = await shareRecipe(data.id);
+      onShared({ ...data, share_slug: slug });
+      await distribute(url);
+    } catch {
+      /* details not ready yet or network — nothing to distribute */
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function onUnshare() {
+    if (busy) return;
+    setBusy(true);
+    try {
+      await unshareRecipe(data.id);
+      onShared({ ...data, share_slug: null });
+    } catch {
+      /* keep state */
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  if (data.status !== "ready") return null;
+
+  return (
+    <div className="flex items-center gap-1">
+      {copied && <span className="text-xs font-medium text-brand-dark">Link copied</span>}
+      <button
+        onClick={onShare}
+        disabled={busy}
+        aria-label="Share recipe"
+        className="flex h-9 items-center justify-center gap-1 rounded-full px-2.5 text-sm font-semibold text-brand-dark disabled:opacity-50"
+      >
+        ↗ {shared ? "Share again" : "Share"}
+      </button>
+      {shared && (
+        <button
+          onClick={onUnshare}
+          disabled={busy}
+          aria-label="Stop sharing"
+          className="flex h-9 items-center justify-center rounded-full px-2 text-xs font-medium text-ink-faint disabled:opacity-50"
+        >
+          Unshare
+        </button>
+      )}
+    </div>
+  );
+}
+
 export default function RecipeSheet({
   recipe,
   saved,
@@ -200,9 +285,12 @@ export default function RecipeSheet({
       <div className="relative mx-auto max-h-[92vh] w-full max-w-md overflow-y-auto rounded-t-3xl bg-surface pb-28">
         <div className="sticky top-0 z-10 flex items-center justify-between border-b border-hairline bg-surface px-5 py-3">
           <span className="text-sm font-semibold text-ink-soft">Recipe</span>
-          <button onClick={onClose} className="flex h-9 w-9 items-center justify-center rounded-full text-ink-soft" aria-label="Close">
-            <span className="text-lg">✕</span>
-          </button>
+          <div className="flex items-center gap-1">
+            <ShareButton data={data} onShared={(r) => { setData(r); onUpdate?.(r); }} />
+            <button onClick={onClose} className="flex h-9 w-9 items-center justify-center rounded-full text-ink-soft" aria-label="Close">
+              <span className="text-lg">✕</span>
+            </button>
+          </div>
         </div>
 
         <div className="px-5 pt-4">

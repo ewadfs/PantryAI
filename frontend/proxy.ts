@@ -37,10 +37,12 @@ export async function proxy(request: NextRequest) {
 
   const pathname = request.nextUrl.pathname;
   const isLogin = pathname.startsWith("/login");
-  // /auth/* (magic-link callback) must be reachable without a session.
+  // /auth/* (magic-link callback) must be reachable without a session, and
+  // /r/* is the public shared-recipe page (P41 B) — no auth by design.
   const isAuthCallback = pathname.startsWith("/auth");
+  const isPublicShare = pathname.startsWith("/r/");
 
-  if (!user && !isLogin && !isAuthCallback) {
+  if (!user && !isLogin && !isAuthCallback && !isPublicShare) {
     const url = request.nextUrl.clone();
     url.pathname = "/login";
     // Preserve the deep link so login lands the user where they were headed.

@@ -80,6 +80,14 @@ export default function CircularPage() {
 
   useEffect(() => {
     load();
+    // P41 A: arrived via a flyer-day notification tap (M=0 pantry matches).
+    if (typeof window !== "undefined") {
+      const params = new URLSearchParams(window.location.search);
+      if (params.get("push") === "1") {
+        import("@/lib/eventsApi").then(({ reportEvent }) => reportEvent("push_opened"));
+        window.history.replaceState({}, "", window.location.pathname);
+      }
+    }
   }, [load]);
 
   // Track the active page from the snap-scroll position (drives dots + strip).

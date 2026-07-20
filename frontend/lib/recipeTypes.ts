@@ -95,6 +95,8 @@ export type Recipe = {
   is_market_pick: boolean;
   market_anchor: MarketAnchor | null;
   quality_flags?: QualityFlags;
+  // Public share (P41 B): non-null when a live /r/{slug} link exists.
+  share_slug?: string | null;
 };
 
 export type GenerateResponse = { recipes: Recipe[] };

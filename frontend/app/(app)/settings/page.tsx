@@ -424,6 +424,11 @@ export default function SettingsPage() {
         </button>
       </Section>
 
+      {/* Notifications (P41 A): flyer-day push, opt-in, one-tap out. */}
+      <Section title="Notifications">
+        <PushToggle />
+      </Section>
+
       {/* Account */}
       <Section title="Account">
         <div className="overflow-hidden rounded-2xl border border-hairline bg-surface">
@@ -443,6 +448,92 @@ export default function SettingsPage() {
           Sign out
         </button>
       </Section>
+    </div>
+  );
+}
+
+function PushToggle() {
+  const toast = useToast();
+  const [supported, setSupported] = useState(true);
+  const [on, setOn] = useState(false);
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    let live = true;
+    import("@/lib/pushApi").then(({ isPushSubscribed }) =>
+      isPushSubscribed().then((v) => {
+        if (!live) return;
+        setOn(v);
+        setSupported(
+          typeof window !== "undefined" &&
+            "serviceWorker" in navigator &&
+            "PushManager" in window,
+        );
+      }),
+    );
+    return () => {
+      live = false;
+    };
+  }, []);
+
+  async function toggle() {
+    setBusy(true);
+    const { enablePush, disablePush } = await import("@/lib/pushApi");
+    try {
+      if (on) {
+        await disablePush();
+        setOn(false);
+        toast.show({ message: "Notifications off. We won't ping you again." });
+      } else {
+        await enablePush();
+        setOn(true);
+        toast.show({
+          message:
+            "You'll hear from us when your store's new flyer lands — at most twice a week.",
+        });
+      }
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Couldn't update notifications.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  if (!supported) {
+    return (
+      <p className="rounded-2xl border border-hairline bg-surface px-4 py-3 text-sm text-ink-soft">
+        This browser doesn&apos;t support notifications.
+      </p>
+    );
+  }
+
+  return (
+    <div className="rounded-2xl border border-hairline bg-surface p-4">
+      <div className="flex items-center justify-between gap-3">
+        <div>
+          <p className="text-base font-medium text-ink">📰 Notify me when new deals land</p>
+          <p className="mt-0.5 text-xs text-ink-soft">
+            One heads-up when your store&apos;s weekly flyer flips. Max twice a
+            week, nothing in between.
+          </p>
+        </div>
+        <button
+          type="button"
+          role="switch"
+          aria-checked={on}
+          disabled={busy}
+          onClick={toggle}
+          className={`relative h-7 w-12 shrink-0 rounded-full transition ${
+            on ? "bg-brand" : "bg-hairline"
+          } disabled:opacity-60`}
+        >
+          <span
+            className={`absolute top-0.5 h-6 w-6 rounded-full bg-white shadow transition-all ${
+              on ? "left-[22px]" : "left-0.5"
+            }`}
+          />
+        </button>
+      </div>
     </div>
   );
 }

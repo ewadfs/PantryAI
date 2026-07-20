@@ -160,6 +160,8 @@ class RecipeRead(BaseModel):
     is_market_pick: bool = False
     market_anchor: MarketAnchor | None = None
     quality_flags: QualityFlags | None = None
+    # Public share (P41 B): non-null when this recipe has a live /r/{slug} link.
+    share_slug: str | None = None
 
 
 class GenerateRequest(BaseModel):

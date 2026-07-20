@@ -2246,6 +2246,7 @@ def recipe_to_read(recipe: Recipe) -> dict:
         "is_market_pick": bool(recipe.is_market_pick),
         "market_anchor": recipe.market_anchor_json,
         "quality_flags": recipe.quality_flags_json,
+        "share_slug": recipe.share_slug,
     }
 
 

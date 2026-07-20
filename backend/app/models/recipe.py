@@ -75,6 +75,11 @@ class Recipe(Base):
     #  "heavy": {"calories": 1104, "cap": 1100, "daily_target": 2000}}.
     # NULL/absent = clean. Rendered as visible amber chips on card + detail.
     quality_flags_json: Mapped[dict | None] = mapped_column(JSONB)
+    # Public share (P41 B): opt-in, revocable. A non-null slug makes the
+    # recipe readable at /r/{slug} with NO auth — unsharing nulls it and the
+    # old link 404s. Never exposes pantry data.
+    share_slug: Mapped[str | None] = mapped_column(String(24), unique=True)
+    shared_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     # rating: -1 thumbs down, 1 thumbs up, null unrated
     rating: Mapped[int | None] = mapped_column(SmallInteger)
     generated_at: Mapped[datetime] = mapped_column(

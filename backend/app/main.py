@@ -15,6 +15,8 @@ from app.routers import (
     events,
     pantry,
     prices,
+    public,
+    push,
     recipes,
     shopping,
     stats,
@@ -160,6 +162,8 @@ app.include_router(shopping.router, prefix=API_PREFIX)
 app.include_router(prices.router, prefix=API_PREFIX)
 app.include_router(stats.router, prefix=API_PREFIX)
 app.include_router(events.router, prefix=API_PREFIX)
+app.include_router(push.router, prefix=API_PREFIX)
+app.include_router(public.router, prefix=API_PREFIX)
 
 
 # The commit serving this process — Railway injects RAILWAY_GIT_COMMIT_SHA at

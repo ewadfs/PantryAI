@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import {
   discoverStores,
@@ -17,6 +17,17 @@ import {
  */
 export default function WelcomePage() {
   const router = useRouter();
+  // P41 B: arrived via a shared recipe's CTA — count the conversion once
+  // the account exists (we're behind auth here, so signup already happened).
+  useEffect(() => {
+    const ref = new URLSearchParams(window.location.search).get("ref");
+    if (ref) {
+      import("@/lib/eventsApi").then(({ reportEvent }) =>
+        reportEvent("share_converted", { slug: ref }),
+      );
+      window.history.replaceState({}, "", "/welcome");
+    }
+  }, []);
   const [zip, setZip] = useState("");
   const [searching, setSearching] = useState(false);
   const [stores, setStores] = useState<DiscoveredStore[] | null>(null);

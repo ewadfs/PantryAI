@@ -9,6 +9,7 @@ from app.models.deal import CircularFetch, DealCache
 from app.models.event import Event
 from app.models.ingredient import IngredientMaster
 from app.models.pantry import PantryItem, PantryScan
+from app.models.push import PushSend, PushSubscription
 from app.models.recipe import Recipe, WeekRecipe
 from app.models.shopping import ShoppingList, ShoppingListItem
 from app.models.store import (
@@ -23,6 +24,8 @@ from app.models.user import User
 __all__ = [
     "AICostEvent",
     "Event",
+    "PushSend",
+    "PushSubscription",
     "User",
     "SupportedChain",
     "StoreLocation",

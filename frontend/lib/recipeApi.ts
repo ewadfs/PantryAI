@@ -62,3 +62,14 @@ export const buildShoppingList = (week_start: string) =>
     method: "POST",
     json: { week_start },
   });
+
+// Public sharing (P41 B): opt-in, revocable.
+export const shareRecipe = (id: number) =>
+  apiFetch<{ slug: string; url: string }>(`/api/v1/recipes/${id}/share`, {
+    method: "POST",
+  });
+
+export const unshareRecipe = (id: number) =>
+  apiFetch<{ status: string }>(`/api/v1/recipes/${id}/share`, {
+    method: "DELETE",
+  });

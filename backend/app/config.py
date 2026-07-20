@@ -103,6 +103,15 @@ class Settings(BaseSettings):
     # Empty = any authenticated user (pre-beta convenience).
     admin_emails: str = ""
 
+    # Web Push (P41 A): VAPID keypair for flyer-day notifications. Empty =
+    # push disabled (subscribe endpoint 503s, refresh never notifies).
+    vapid_public_key: str = ""
+    vapid_private_key: str = ""
+    vapid_subject: str = "mailto:callmebrandon@gmail.com"
+
+    # Public origin of the frontend — used for share URLs and push deep links.
+    frontend_origin: str = "https://zesty-liberation-production-71c3.up.railway.app"
+
     # CORS — comma-separated *extra* origins, merged with _DEFAULT_CORS_ORIGINS.
     # A bare "*" is ignored because it cannot be combined with credentials.
     cors_origins: str = ""

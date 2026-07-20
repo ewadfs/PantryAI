@@ -2308,25 +2308,37 @@ def week_plan_summary(recipes: list[Recipe]) -> dict:
             price = _to_decimal(ing.get("sale_price"))
             if ing.get("on_sale") and price is not None:
                 priced.setdefault(k, price)  # credited once, set-wide
-    known = sum(priced.values(), Decimal("0"))
-    unpriced = sum(1 for k in used_in if k not in priced)
-
+    # Market anchors carry OUR verified flyer price even when the flyer name
+    # didn't match ingredient_master (observed live: "Korean BBQ Flavored
+    # Beef" priced $11.49 on the card but $0 in the estimate). Credit each
+    # distinct anchor once, unless its key ingredient was already priced.
     savings = Decimal("0")
     seen_anchor: set[str] = set()
     for r in recipes:
         a = r.market_anchor_json or {}
         sale = _to_decimal(a.get("sale_price"))
-        pct = a.get("savings_pct")
-        key = a.get("anchor_key") or a.get("name") or ""
-        if sale is None or not pct or not key or key in seen_anchor:
+        key = (
+            a.get("anchor_key")
+            or _ing_key(str(a.get("name") or ""))
+            or str(a.get("name") or "")
+        )
+        if sale is None or not key or key in seen_anchor:
             continue
         seen_anchor.add(key)
-        try:
-            frac = Decimal(str(pct)) / Decimal("100")
-            if Decimal("0") < frac < Decimal("1"):
-                savings += (sale / (1 - frac)) - sale
-        except Exception:  # noqa: BLE001 — estimate only, never break the plan
-            continue
+        if key not in priced:
+            priced[key] = sale
+            # The anchor is priced now — don't also report it as unpriced.
+            used_in.setdefault(key, used_in.get(key, [r.title]))
+        pct = a.get("savings_pct")
+        if pct:
+            try:
+                frac = Decimal(str(pct)) / Decimal("100")
+                if Decimal("0") < frac < Decimal("1"):
+                    savings += (sale / (1 - frac)) - sale
+            except Exception:  # noqa: BLE001 — estimate only
+                continue
+    known = sum(priced.values(), Decimal("0"))
+    unpriced = sum(1 for k in used_in if k not in priced)
 
     shared = [
         {"name": names[k], "used_in": titles}
@@ -4443,11 +4455,17 @@ async def _regen_failed_slot(
     detail_system: list[dict] | str,
     *,
     category: str,
+    avoid_anchors: list[str] | None = None,
 ) -> tuple[dict, list[dict], dict | None, float | None, float | None] | None:
     """P39 A2: a severe computed shortfall regenerates the SLOT once with the
     computed failure named, then writes details for the replacement concept.
     Returns (data, ingredients, final_nut, protein, calories) or None when the
-    regeneration didn't come back usable (caller falls through and chips)."""
+    regeneration didn't come back usable (caller falls through and chips).
+
+    ``avoid_anchors``: the batch's OTHER anchors — the replacement must not
+    collapse onto a batchmate's protein (observed live in week mode: two
+    detail-stage regens both grabbed the flyer's beef, shipping three beef
+    dinners in one 'coordinated' week)."""
     sig = recipe.signature_json if isinstance(recipe.signature_json, dict) else {}
     brief = {
         "title": recipe.title,
@@ -4472,6 +4490,12 @@ async def _regen_failed_slot(
         f'concept as JSON {{"recipes":[{{...same shape...}}]}}, SAME '
         f"difficulty tier ('{recipe.difficulty}')."
     )
+    if avoid_anchors:
+        correction += (
+            "  The batch already has dishes anchored on: "
+            f"{', '.join(avoid_anchors)} — the replacement's anchor must be a "
+            "DIFFERENT protein (one anchor, one dish)."
+        )
     msg = (
         f"{ctx.context_text}{correction}\n\nConcept to replace:\n"
         f"{json.dumps(brief, ensure_ascii=False)}\n\nReturn the fixed concept now."
@@ -4485,6 +4509,18 @@ async def _regen_failed_slot(
     if not (isinstance(recs, list) and recs and isinstance(recs[0], dict)):
         return None
     c = recs[0]
+    # Verified, not trusted: a regen that collapses onto a batchmate's anchor
+    # is worse than the honest chip — discard it (one anchor, one dish).
+    if avoid_anchors:
+        new_key = _ing_key(str(c.get("anchor_ingredient") or ""))
+        avoid_keys = {k for k in (_ing_key(a) for a in avoid_anchors) if k}
+        if new_key is not None and new_key in avoid_keys:
+            logger.warning(
+                "Computed-shortfall regen for %r rejected: replacement anchor "
+                "%r duplicates a batchmate's — shipping the chip instead.",
+                recipe.title, c.get("anchor_ingredient"),
+            )
+            return None
     recipe.title = str(c.get("title") or recipe.title)[:255]
     recipe.description = c.get("description")
     recipe.why_this_recipe = c.get("why_this_recipe")
@@ -4583,9 +4619,26 @@ async def _fill_details(
             )
         )
         if severe:
+            # The batch's OTHER anchors (all rows sharing this generated_at,
+            # incl. lazy siblings not in this details call) — the regen must
+            # not collapse onto one of them.
+            sibling_rows = (
+                await db.execute(
+                    select(Recipe.id, Recipe.signature_json).where(
+                        Recipe.user_id == recipe.user_id,
+                        Recipe.generated_at == recipe.generated_at,
+                    )
+                )
+            ).all()
+            avoid = [
+                str(sig.get("anchor_ingredient"))
+                for rid, sig in sibling_rows
+                if rid != recipe.id and isinstance(sig, dict)
+                and sig.get("anchor_ingredient")
+            ]
             regen = await _regen_failed_slot(
                 client, recipe, ctx, protein, floor, detail_system,
-                category=category,
+                category=category, avoid_anchors=avoid,
             )
             if regen is not None:
                 data, ingredients, final_nut, protein, calories = regen

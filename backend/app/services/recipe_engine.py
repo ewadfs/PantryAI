@@ -4511,10 +4511,20 @@ async def _regen_failed_slot(
     c = recs[0]
     # Verified, not trusted: a regen that collapses onto a batchmate's anchor
     # is worse than the honest chip — discard it (one anchor, one dish).
+    # Matching is key-exact OR protein-token fuzzy: observed live, sequential
+    # regens shipped "pork coarse sausage" and "pork sausage" as 'different'
+    # anchors under exact keys.
     if avoid_anchors:
-        new_key = _ing_key(str(c.get("anchor_ingredient") or ""))
+        new_anchor = str(c.get("anchor_ingredient") or "")
+        new_key = _ing_key(new_anchor)
         avoid_keys = {k for k in (_ing_key(a) for a in avoid_anchors) if k}
-        if new_key is not None and new_key in avoid_keys:
+        new_prot = set(ingredient_matcher._tokens(new_anchor)) & _PROTEIN_NAME_TOKENS
+        avoid_prot = set()
+        for a in avoid_anchors:
+            avoid_prot |= set(ingredient_matcher._tokens(a)) & _PROTEIN_NAME_TOKENS
+        if (new_key is not None and new_key in avoid_keys) or (
+            new_prot and new_prot & avoid_prot
+        ):
             logger.warning(
                 "Computed-shortfall regen for %r rejected: replacement anchor "
                 "%r duplicates a batchmate's — shipping the chip instead.",

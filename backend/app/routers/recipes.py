@@ -22,7 +22,7 @@ from app.schemas.recipe import (
     WeekRecipeRead,
     WeekResponse,
 )
-from app.services import ingredient_matcher, recipe_engine
+from app.services import events, ingredient_matcher, recipe_engine
 from app.services.auth import get_current_user
 
 logger = logging.getLogger(__name__)
@@ -235,6 +235,7 @@ async def save_to_week(
             user_id=current_user.id, recipe_id=recipe_id, week_start=week_start
         )
         db.add(wr)
+        events.log(db, current_user.id, "save_to_week", recipe_id=recipe_id)
         await db.flush()
 
     return WeekRecipeRead(

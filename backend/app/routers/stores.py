@@ -12,7 +12,7 @@ from app.schemas.store import (
     StoreSelectionUpdate,
     UserStoreRead,
 )
-from app.services import store_discovery
+from app.services import events, store_discovery
 from app.services.auth import get_current_user
 from app.services.vision import activate_region_bg
 
@@ -169,6 +169,7 @@ async def set_default_store(
 
     # Prompt 24 C2: switching to a store activates its chain×region deals.
     await _activate_store_deals(db, store_location_id, background_tasks)
+    events.log(db, current_user.id, "store_selected", store_location_id=store_location_id)
     # Prompt 27 pre-gen discipline: a store switch no longer auto-generates a
     # recipe batch (that burned a paid generation on every toggle). The Recipes
     # tab shows a staleness note and the emphasized Generate button covers intent.
@@ -241,5 +242,6 @@ async def replace_my_stores(
     default_id = payload.default_store_id or (unique_ids[0] if unique_ids else None)
     if default_id is not None:
         await _activate_store_deals(db, default_id, background_tasks)
+        events.log(db, current_user.id, "store_selected", store_location_id=default_id)
 
     return await list_my_stores(current_user=current_user, db=db)

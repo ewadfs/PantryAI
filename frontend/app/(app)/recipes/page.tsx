@@ -16,7 +16,9 @@ import {
 } from "@/lib/recipeApi";
 import { getMyStores, setDefaultStore } from "@/lib/storesApi";
 import type { Difficulty } from "@/lib/recipeApi";
-import { getMe } from "@/lib/userApi";
+import { getMe, type UserProfile } from "@/lib/userApi";
+import { getTopDeals, type Deal } from "@/lib/dealsApi";
+import { reportEvent } from "@/lib/eventsApi";
 import { listPantry } from "@/lib/pantryApi";
 import type { UserStore } from "@/lib/listTypes";
 import type { PantryItem } from "@/lib/types";
@@ -27,6 +29,7 @@ import StoreSheet from "@/components/recipes/StoreSheet";
 import ThisWeek from "@/components/recipes/ThisWeek";
 import Confetti from "@/components/recipes/Confetti";
 import SetupPanel from "@/components/recipes/SetupPanel";
+import UpgradeCards from "@/components/recipes/UpgradeCards";
 import GenerateMorePill from "@/components/recipes/GenerateMorePill";
 import { type Pin } from "@/components/recipes/UseUpRow";
 
@@ -35,6 +38,19 @@ const STEPS = [
   "Checking this week's deals…",
   "Writing your recipes…",
 ];
+
+const FIRST_BATCH_KEY = "pantryai:evt:first_batch_viewed";
+
+/** Report first_batch_viewed once per browser (funnel counts distinct users). */
+function maybeReportFirstBatch(count: number) {
+  try {
+    if (localStorage.getItem(FIRST_BATCH_KEY) === "1") return;
+    localStorage.setItem(FIRST_BATCH_KEY, "1");
+  } catch {
+    /* still report */
+  }
+  reportEvent("first_batch_viewed", { count });
+}
 
 const TIER_RANK: Record<string, number> = { easy: 0, medium: 1, hard: 2 };
 function tierRank(d: string | null): number {
@@ -126,6 +142,12 @@ export default function RecipesPage() {
   const [batchDifficulties, setBatchDifficulties] = useState<string[]>([]);
   const [pantryMode, setPantryMode] = useState(false);
   const [batchPantryMode, setBatchPantryMode] = useState(false);
+  const [me, setMe] = useState<UserProfile | null>(null);
+  // P40 B4: arriving from onboarding, the loading state IS the store's real
+  // deals — prices on screen while the chef writes the first batch.
+  const [welcomeDeals, setWelcomeDeals] = useState<Deal[]>([]);
+  const [welcomeStore, setWelcomeStore] = useState<string | null>(null);
+  const [fromWelcome, setFromWelcome] = useState(false);
   const stepTimer = useRef<ReturnType<typeof setInterval> | null>(null);
   const pollTimer = useRef<ReturnType<typeof setInterval> | null>(null);
   const directionRef = useRef("");
@@ -222,6 +244,7 @@ export default function RecipesPage() {
         activePantryMode,
       );
       setRecipes(res.recipes);
+      maybeReportFirstBatch(res.recipes.length);
       setGeneratedAt(res.recipes[0]?.generated_at ?? new Date().toISOString());
       setBatchPins(activePins.map((p) => p.name));
       setBatchDirection(activeDirection || null);
@@ -256,6 +279,7 @@ export default function RecipesPage() {
       const res = await getLatestRecipes();
       if (res.recipes.length) {
         setRecipes(res.recipes);
+        maybeReportFirstBatch(res.recipes.length);
         setGeneratedAt(res.generated_at);
         setBatchStore(res.store_name);
         setBatchPins(res.pinned ?? []);
@@ -289,8 +313,9 @@ export default function RecipesPage() {
 
   const loadProfile = useCallback(async () => {
     try {
-      const me = await getMe();
-      if (me.recipes_per_generation) setPerBatch(me.recipes_per_generation);
+      const profile = await getMe();
+      setMe(profile);
+      if (profile.recipes_per_generation) setPerBatch(profile.recipes_per_generation);
     } catch {
       /* ignore — skeleton count falls back to default */
     }
@@ -426,6 +451,15 @@ export default function RecipesPage() {
         },
       ]);
     }
+    // P40 B4: landing here from ZIP-first onboarding — show the chosen
+    // store's real deals as the generation loading state.
+    if (params.get("welcome") === "1") {
+      setFromWelcome(true);
+      setWelcomeStore(params.get("store"));
+      getTopDeals()
+        .then(setWelcomeDeals)
+        .catch(() => {});
+    }
     // ?tab=week lands on This Week; a pin or generate implies Discover.
     if (
       params.get("tab") === "week" && !pinId && !dealId &&
@@ -446,6 +480,11 @@ export default function RecipesPage() {
       if (pollTimer.current) clearInterval(pollTimer.current);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const openRecipe = useCallback((r: Recipe) => {
+    setSelected(r);
+    reportEvent("recipe_opened", { recipe_id: r.id });
   }, []);
 
   function applyRating(id: number, rating: number) {
@@ -646,6 +685,40 @@ export default function RecipesPage() {
 
           {generating && (
             <div className="mt-4 flex flex-col gap-4">
+              {/* P40 B4: onboarding loading state = the store's REAL deals. */}
+              {fromWelcome && welcomeDeals.length > 0 && (
+                <section className="rounded-2xl border border-brand/25 bg-brand-soft/60 p-4">
+                  <h2 className="text-sm font-bold text-ink">
+                    This week{welcomeStore ? ` at ${welcomeStore}` : ""} 🏷️
+                  </h2>
+                  <p className="mt-0.5 text-xs text-ink-soft">
+                    Real flyer prices — your dinners are being built around these
+                    right now.
+                  </p>
+                  <ul className="mt-2 divide-y divide-hairline/60">
+                    {welcomeDeals.slice(0, 5).map((d) => (
+                      <li key={d.id} className="flex items-center gap-3 py-2">
+                        <span className="min-w-0 flex-1 truncate text-sm text-ink">
+                          {d.product_name}
+                        </span>
+                        <span className="shrink-0 text-sm font-semibold text-ink">
+                          ${Number(d.sale_price ?? 0).toFixed(2)}
+                          {d.price_unit ? (
+                            <span className="font-normal text-ink-faint">
+                              /{d.price_unit}
+                            </span>
+                          ) : null}
+                        </span>
+                        {d.savings_pct != null && (
+                          <span className="shrink-0 rounded-full bg-brand-soft px-2 py-0.5 text-[11px] font-bold text-brand-dark">
+                            {Number(d.savings_pct).toFixed(0)}% off
+                          </span>
+                        )}
+                      </li>
+                    ))}
+                  </ul>
+                </section>
+              )}
               {Array.from({ length: perBatch }, (_, i) => (
                 <SkeletonCard key={i} />
               ))}
@@ -675,10 +748,21 @@ export default function RecipesPage() {
                     savstate={savingId === r.id ? "saving" : "idle"}
                     onSave={() => onSave(r.id)}
                     onRate={(rating) => onRate(r.id, rating)}
-                    onExpand={() => setSelected(r)}
+                    onExpand={() => openRecipe(r)}
                   />
                 ))}
               </div>
+              {/* P40 B5: progressive upgrade cards — AFTER the batch, never
+                  before it. One missing piece at a time, dismissible. */}
+              <UpgradeCards
+                me={me}
+                pantryCount={pantryItems.length}
+                onProfileSaved={setMe}
+                onGenerate={() => {
+                  window.scrollTo({ top: 0, behavior: "smooth" });
+                  generate();
+                }}
+              />
             </div>
           )}
 
@@ -697,7 +781,7 @@ export default function RecipesPage() {
               buildingList={buildingList}
               onCooked={onCooked}
               onRemove={onRemove}
-              onOpen={setSelected}
+              onOpen={openRecipe}
               onBuildList={onBuildList}
             />
           ) : (

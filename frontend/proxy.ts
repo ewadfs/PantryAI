@@ -35,17 +35,27 @@ export async function proxy(request: NextRequest) {
     data: { user },
   } = await supabase.auth.getUser();
 
-  const isAuthRoute = request.nextUrl.pathname.startsWith("/login");
+  const pathname = request.nextUrl.pathname;
+  const isLogin = pathname.startsWith("/login");
+  // /auth/* (magic-link callback) must be reachable without a session.
+  const isAuthCallback = pathname.startsWith("/auth");
 
-  if (!user && !isAuthRoute) {
+  if (!user && !isLogin && !isAuthCallback) {
     const url = request.nextUrl.clone();
     url.pathname = "/login";
+    // Preserve the deep link so login lands the user where they were headed.
+    const dest = pathname + request.nextUrl.search;
+    url.search = dest !== "/" ? `?next=${encodeURIComponent(dest)}` : "";
     return NextResponse.redirect(url);
   }
 
-  if (user && isAuthRoute) {
+  if (user && isLogin) {
     const url = request.nextUrl.clone();
-    url.pathname = "/";
+    const next = request.nextUrl.searchParams.get("next") ?? "/";
+    const safe = next.startsWith("/") && !next.startsWith("//") ? next : "/";
+    const [pathOnly, query = ""] = safe.split("?");
+    url.pathname = pathOnly;
+    url.search = query ? `?${query}` : "";
     return NextResponse.redirect(url);
   }
 

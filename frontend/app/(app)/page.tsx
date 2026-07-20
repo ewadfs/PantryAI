@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { useToast } from "@/components/ui/Toast";
 import { getDealsState, getTopDeals, type Deal } from "@/lib/dealsApi";
 import { getMyStores, setDefaultStore } from "@/lib/storesApi";
@@ -51,6 +52,7 @@ function num(v: string | number | null | undefined): number {
 
 export default function HomePage() {
   const toast = useToast();
+  const router = useRouter();
   const [loading, setLoading] = useState(true);
   const [me, setMe] = useState<UserProfile | null>(null);
   const [deals, setDeals] = useState<Deal[]>([]);
@@ -65,6 +67,7 @@ export default function HomePage() {
 
   const load = useCallback(async () => {
     setLoading(true);
+    let redirecting: boolean | undefined;
     try {
       const [meRes, dealsRes, pantryRes, storesRes, weekRes, savingsRes, stateRes] =
         await Promise.all([
@@ -76,6 +79,14 @@ export default function HomePage() {
           getSavings().catch(() => null),
           getDealsState().catch(() => null),
         ]);
+      // P40 B: a brand-new account (no stores yet) goes straight to the
+      // ZIP-first onboarding — picking a store is the only required setup.
+      // Keep the skeleton up (loading stays true) so Home never flashes.
+      if (storesRes.length === 0) {
+        redirecting = true;
+        router.replace("/welcome");
+        return;
+      }
       setMe(meRes);
       setDeals(dealsRes);
       setPantry(pantryRes);
@@ -86,9 +97,9 @@ export default function HomePage() {
     } catch {
       toast.error("Couldn't load your home screen.", load);
     } finally {
-      setLoading(false);
+      if (!redirecting) setLoading(false);
     }
-  }, [toast]);
+  }, [toast, router]);
 
   useEffect(() => {
     load();

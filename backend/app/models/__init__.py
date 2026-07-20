@@ -6,6 +6,7 @@ Importing every model here ensures they are all registered on
 
 from app.models.ai_cost import AICostEvent
 from app.models.deal import CircularFetch, DealCache
+from app.models.event import Event
 from app.models.ingredient import IngredientMaster
 from app.models.pantry import PantryItem, PantryScan
 from app.models.recipe import Recipe, WeekRecipe
@@ -21,6 +22,7 @@ from app.models.user import User
 
 __all__ = [
     "AICostEvent",
+    "Event",
     "User",
     "SupportedChain",
     "StoreLocation",

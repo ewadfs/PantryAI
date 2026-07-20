@@ -99,6 +99,10 @@ class Settings(BaseSettings):
     headless_worker_url: str = ""
     headless_worker_timeout: int = 240
 
+    # Comma-separated emails allowed on admin-ish endpoints (/stats/funnel).
+    # Empty = any authenticated user (pre-beta convenience).
+    admin_emails: str = ""
+
     # CORS — comma-separated *extra* origins, merged with _DEFAULT_CORS_ORIGINS.
     # A bare "*" is ignored because it cannot be combined with credentials.
     cors_origins: str = ""

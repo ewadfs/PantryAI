@@ -18,11 +18,12 @@ from typing import Any
 import httpx
 from fastapi import Depends, Header, HTTPException, status
 from jose import JWTError, jwt
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
+from app.services import events
 from app.database import get_db
 from app.models.user import User
 
@@ -120,11 +121,18 @@ async def get_current_user(
         )
     else:
         stmt = stmt.on_conflict_do_nothing(index_elements=["supabase_user_id"])
-    await db.execute(stmt)
+    # xmax = 0 only on a freshly inserted row — the one honest "this request
+    # CREATED the account" signal, even under concurrent first-sight requests
+    # (P40 C: the signup funnel event).
+    created = (
+        await db.execute(stmt.returning(text("xmax = 0")))
+    ).scalar()
 
     user = await db.scalar(
         select(User).where(User.supabase_user_id == sub)
     )
     if user is None:  # pragma: no cover - should be unreachable after upsert
         raise _unauthorized
+    if created:
+        events.log(db, user.id, "signup")
     return user

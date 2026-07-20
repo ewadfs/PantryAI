@@ -22,7 +22,7 @@ from app.schemas.shopping import (
     ShoppingItemRead,
     ShoppingListRead,
 )
-from app.services import ingredient_matcher, list_builder
+from app.services import events, ingredient_matcher, list_builder
 from app.services.auth import get_current_user
 
 router = APIRouter(tags=["shopping"])
@@ -87,6 +87,8 @@ async def build(
         sl, items = await list_builder.build_list(db, current_user, payload.week_start)
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(e))
+    events.log(db, current_user.id, "list_built", list_id=sl.id, items=len(items))
+    await db.flush()
     return ShoppingListRead.model_validate(list_builder.serialize_list(sl, items))
 
 
@@ -259,6 +261,7 @@ async def complete_list(
     now = _now()
     sl.status = "completed"
     sl.completed_at = now
+    events.log(db, current_user.id, "list_completed", list_id=list_id)
 
     checked = [it for it in await _list_items(db, sl.id) if it.is_checked]
     if not checked:

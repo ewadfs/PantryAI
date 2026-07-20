@@ -28,7 +28,7 @@ from app.schemas.pantry import (
     PantryListResponse,
     ScanResponse,
 )
-from app.services import ingredient_matcher, recipe_engine, vision
+from app.services import events, ingredient_matcher, recipe_engine, vision
 from app.services.auth import get_current_user
 
 router = APIRouter(prefix="/pantry", tags=["pantry"])
@@ -88,6 +88,8 @@ async def scan_pantry(
         images.append(data)
 
     result = await vision.process_pantry_scan(db, current_user.id, images)
+    events.log(db, current_user.id, "scan_started", images=len(images))
+    await db.flush()
     return ScanResponse(**result)
 
 
@@ -208,6 +210,14 @@ async def confirm_scan(
         scan.ai_response_json = response_json
 
     scan.items_confirmed = len(confirmed_keys)
+    events.log(
+        db,
+        current_user.id,
+        "scan_confirmed",
+        scan_id=scan_id,
+        confirmed=len(confirmed_keys),
+        mode=payload.mode,
+    )
     await db.flush()
 
     total_active = len(

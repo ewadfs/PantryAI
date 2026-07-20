@@ -9,7 +9,17 @@ from sqlalchemy import text
 
 from app.config import settings
 from app.database import AsyncSessionLocal, engine
-from app.routers import auth, deals, pantry, prices, recipes, shopping, stats, stores
+from app.routers import (
+    auth,
+    deals,
+    events,
+    pantry,
+    prices,
+    recipes,
+    shopping,
+    stats,
+    stores,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -149,6 +159,7 @@ app.include_router(recipes.router, prefix=API_PREFIX)
 app.include_router(shopping.router, prefix=API_PREFIX)
 app.include_router(prices.router, prefix=API_PREFIX)
 app.include_router(stats.router, prefix=API_PREFIX)
+app.include_router(events.router, prefix=API_PREFIX)
 
 
 # The commit serving this process — Railway injects RAILWAY_GIT_COMMIT_SHA at

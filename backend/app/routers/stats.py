@@ -211,3 +211,86 @@ async def ai_costs(
     (generation, pre-generation, scan, circular, critic)."""
     windows = [await _cost_window(db, 7), await _cost_window(db, 30)]
     return AICostResponse(windows=windows)
+
+
+# --------------------------------------------------------------------------- #
+# Funnel (P40 C7) — counts + step conversion by signup-cohort week.
+# --------------------------------------------------------------------------- #
+@router.get("/stats/funnel")
+async def funnel(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Distinct users per funnel step, split by signup-cohort week, with
+    step-over-step conversion and computed D1/D7 return. Admin-gated when
+    ADMIN_EMAILS is configured; any authenticated user otherwise (pre-beta)."""
+    from app.config import settings as _settings
+    from app.models.event import Event
+    from app.services.events import FUNNEL_STEPS
+
+    admins = [
+        e.strip().lower() for e in (_settings.admin_emails or "").split(",")
+        if e.strip()
+    ]
+    if admins and (current_user.email or "").lower() not in admins:
+        from fastapi import HTTPException, status as _status
+        raise HTTPException(status_code=_status.HTTP_403_FORBIDDEN,
+                            detail="Admin only.")
+
+    cohort = func.date_trunc("week", User.created_at).label("cohort")
+    # Distinct users per (cohort, event).
+    rows = (
+        await db.execute(
+            select(
+                cohort,
+                Event.event,
+                func.count(func.distinct(Event.user_id)),
+            )
+            .join(User, User.id == Event.user_id)
+            .where(Event.event.in_(FUNNEL_STEPS))
+            .group_by(cohort, Event.event)
+        )
+    ).all()
+    by_cohort: dict[str, dict[str, int]] = {}
+    for c, ev, n in rows:
+        by_cohort.setdefault(c.date().isoformat(), {})[ev] = int(n)
+
+    # D1/D7 return: any event on [signup+1d, +2d) / [signup+7d, +8d).
+    ret_rows = (
+        await db.execute(
+            select(
+                cohort,
+                func.count(func.distinct(Event.user_id)).filter(
+                    Event.ts >= User.created_at + func.make_interval(0, 0, 0, 1),
+                    Event.ts < User.created_at + func.make_interval(0, 0, 0, 2),
+                ).label("d1"),
+                func.count(func.distinct(Event.user_id)).filter(
+                    Event.ts >= User.created_at + func.make_interval(0, 0, 0, 7),
+                    Event.ts < User.created_at + func.make_interval(0, 0, 0, 8),
+                ).label("d7"),
+            )
+            .join(User, User.id == Event.user_id)
+            .group_by(cohort)
+        )
+    ).all()
+    returns = {c.date().isoformat(): {"d1": int(d1), "d7": int(d7)}
+               for c, d1, d7 in ret_rows}
+
+    out = []
+    for week in sorted(by_cohort):
+        counts = by_cohort[week]
+        steps = []
+        prev = None
+        for step in FUNNEL_STEPS:
+            n = counts.get(step, 0)
+            conv = round(n / prev, 3) if prev else None
+            steps.append({"step": step, "users": n,
+                          "conversion_from_prev": conv})
+            if n:
+                prev = n
+        out.append({
+            "cohort_week": week,
+            "steps": steps,
+            "returns": returns.get(week, {"d1": 0, "d7": 0}),
+        })
+    return {"cohorts": out}
